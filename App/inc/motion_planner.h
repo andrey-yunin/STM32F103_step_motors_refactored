@@ -23,14 +23,13 @@ typedef struct {
     uint32_t acceleration_steps_per_sec2; // Ускорение (шагов/сек^2)
     uint8_t direction;              // Направление движения (0 - CW, 1 - CCW)
     int32_t steps_to_go;            // Сколько шагов осталось сделать
-    uint32_t step_pulse_period_us;  // Период STEP-импульса в микросекундах (для таймера)
     } MotorMotionState_t;
 
 
 // Прототипы функций планировщика движения
 void MotionPlanner_InitMotorState(MotorMotionState_t* state, int32_t initial_pos);
 int32_t MotionPlanner_CalculateNewTarget(MotorMotionState_t* state, int32_t target);
-uint32_t MotionPlanner_GetNextPulsePeriod(MotorMotionState_t* state);
+uint32_t MotionPlanner_GetNextFrequency(MotorMotionState_t* state);
 uint8_t MotionPlanner_IsMovementComplete(MotorMotionState_t* state);
 
 

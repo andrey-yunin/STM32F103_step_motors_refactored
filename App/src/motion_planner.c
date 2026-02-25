@@ -25,7 +25,6 @@ void MotionPlanner_InitMotorState(MotorMotionState_t* state, int32_t initial_pos
     state->acceleration_steps_per_sec2 = 500; // Ускорение по умолчанию
     state->direction = 0;
     state->steps_to_go = 0;
-    state->step_pulse_period_us = 0;
     }
 
 /**
@@ -50,39 +49,30 @@ int32_t MotionPlanner_CalculateNewTarget(MotorMotionState_t* state, int32_t targ
     return state->steps_to_go;
     }
 
+
 /**
- * @brief Рассчитывает следующий период для таймера. (Пока заглушка)
+ * @brief Рассчитывает следующую частоту для STEP-импульсов.
+ *        (Заглушка: Пока возвращает максимальную скорость как частоту).
  * @param state Указатель на структуру состояния.
- * @return Период в микросекундах.
+ * @return Частота в шагах/сек (Герцах).
  */
-uint32_t MotionPlanner_GetNextPulsePeriod(MotorMotionState_t* state)
+uint32_t MotionPlanner_GetNextFrequency(MotorMotionState_t* state)
 {
 	if (state == NULL || state->steps_to_go == 0) {
-		return 0; // Движение не требуется
-    }
+		return 0; // Движение не требуется, частота 0
+		}
 
-//
-// --- ЗДЕСЬ БУДЕТ СЛОЖНАЯ ЛОГИКА ---
-//
-// На данном этапе мы просто возвращаем период для максимальной скорости.
-// В будущем здесь будет алгоритм, который плавно изменяет этот период
-// для реализации трапецеидального профиля движения (ускорение/замедление).
-//
+	// --- ВРЕМЕННАЯ ЛОГИКА ---
+	// На данном этапе мы просто возвращаем максимальную скорость как целевую частоту.
+	// В будущем здесь будет реализован алгоритм для генерации профилей ускорения/замедления.
+	// Логика по изменению steps_to_go и current_position будет перенесена
+	// в обработчик прерываний таймера, который будет отслеживать фактические шаги.
 
-    if (state->steps_to_go > 0) {
-// Уменьшаем количество шагов
-    state->steps_to_go--;
-// Обновляем текущую позицию
-    if (state->direction) {
-    	state->current_position++;
-     } else {
-     state->current_position--;
-            }
-     }
-
-// Период = 1 000 000 микросекунд / скорость (шагов/сек)
-return 1000000 / state->max_speed_steps_per_sec;
+	return state->max_speed_steps_per_sec;
 }
+
+
+
 
 /**
  * @brief Проверяет, завершено ли движение.
