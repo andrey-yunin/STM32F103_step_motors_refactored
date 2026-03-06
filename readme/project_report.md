@@ -603,3 +603,225 @@ HAL_StatusTypeDef TMC2209_SetSpreadCycle(TMC2209_Handle_t* htmc, uint8_t enable)
 | **UART2**   | `UART2_RX`  | `PA3`  | Прием данных UART2 (для TMC2209)               |
 |             | `UART2_TX`  | `PA2`  | Передача данных UART2 (для TMC2209)            |
 ---
+
+## 7. Этап: Аудит и подготовка к интеграции с дирижером по CAN (05.03.2026)
+
+### 7.1. Цель аудита
+Оценить готовность прошивки исполнителя к физическому соединению и обмену данными с дирижером (Conductor) по CAN-шине. Выявить несовместимости протоколов, архитектурные проблемы и баги, блокирующие интеграцию.
+
+### 7.2. Справочные материалы дирижера
+Протокол дирижера определен в файлах `readme/conductor_interface/`:
+*   `can_packer.h` — формат CAN ID (29-bit Extended), коды команд, макросы упаковки/распаковки
+*   `device_mapping.h` — логические идентификаторы устройств анализатора
+*   `executor_simulator.c` — эталонная реализация ответов исполнителя (ACK/DONE)
+*   `can_message.h` — структура CAN-сообщения внутри дирижера
+
+### 7.3. Выявленные критические несовместимости
+
+#### 7.3.1. Полное несовпадение формата CAN ID
+**Дирижер** использует 29-bit Extended CAN ID:
+```
+ID[28:26] = Priority (3 бита)
+ID[25:24] = MsgType (2 бита): COMMAND=0, ACK=1, NACK=2, DATA_DONE_LOG=3
+ID[23:16] = DstAddr (8 бит): MOTOR_BOARD=0x20
+ID[15:8]  = SrcAddr (8 бит): CONDUCTOR=0x10
+ID[7:0]   = Reserved
+```
+Макрос: `CAN_BUILD_ID(priority, msg_type, dst_addr, src_addr)`
+
+**Исполнитель** использует 11-bit Standard CAN ID:
+```
+StdId = 0x100 | (Performer_ID << 4) | Motor_ID
+```
+
+Форматы полностью несовместимы. Ни один кадр от дирижера не будет принят корректно.
+
+#### 7.3.2. Несовпадение формата payload команд
+**Дирижер** (пример `MOTOR_ROTATE`, DLC=8):
+```
+data[0..1] = command_code (uint16_t LE), например 0x0101
+data[2]    = motor_id (логический, из device_mapping.h)
+data[3..6] = steps (int32_t LE)
+data[7]    = speed (uint8_t, масштабированная)
+```
+
+**Исполнитель** (текущий формат):
+```
+data[0]    = CommandID_t (1 байт), например 0x02
+data[1..4] = payload (int32_t LE)
+motor_id извлекается из CAN ID, а не из payload
+```
+
+#### 7.3.3. Отсутствие механизма ответов ACK/DONE
+Дирижер ожидает от исполнителя:
+*   **ACK** — немедленное подтверждение приема команды (MsgType=1)
+*   **DONE** — уведомление о завершении операции (MsgType=3, SubType=0x01)
+
+В текущем коде исполнителя ответы практически не реализованы.
+
+#### 7.3.4. Нет маппинга логических device_id в физические motor_id
+Дирижер оперирует идентификаторами из `device_mapping.h`: `DEV_DISPENSER_MOTOR_XY=1`, `DEV_REACTION_DISK_MOTOR=10` и т.д. Исполнитель работает с индексами массивов `0-7`. Требуется таблица трансляции.
+
+### 7.4. Выявленные баги в текущем коде
+
+#### 7.4.1. Отсутствие обработчика прерывания CAN RX FIFO0
+**Файл:** `Core/Src/stm32f1xx_it.c`
+В файле присутствует `CAN1_RX1_IRQHandler` (FIFO1), но callback `HAL_CAN_RxFifo0MsgPendingCallback` работает с FIFO0, и в `task_can_handler.c` активируется `CAN_IT_RX_FIFO0_MSG_PENDING`. Обработчик `CAN1_RX0_IRQHandler` **отсутствует** — CAN-приём, вероятно, не работает.
+**Решение:** Проверить настройки NVIC в .ioc-файле, включить `CAN1 RX0 interrupts`.
+
+#### 7.4.2. Чтение неинициализированной переменной в task_command_parser.c
+**Файл:** `App/src/tasks/task_command_parser.c`, строка 36
+Внутри цикла `for(;;)` отсутствует вызов `osMessageQueueGet()`. Переменная `received_command` используется без заполнения — undefined behavior. Также `osDelay(1)` расположен **за** закрывающей скобкой `for(;;)` — недоступен.
+
+#### 7.4.3. Несоответствие типов в motion_queue
+**Файл:** `main.c:166` — очередь создана с `sizeof(MotionCommand_t)`
+**Файл:** `task_motion_controller.c:21` — из очереди читается `CAN_Command_t`
+Структуры имеют разный размер и разные поля — undefined behavior при чтении из очереди.
+
+#### 7.4.4. TIM1 в режиме One Pulse Mode
+**Файл:** `main.c:415` — `HAL_TIM_OnePulse_Init(&htim1, TIM_OPMODE_SINGLE)`
+Данный режим останавливает таймер после первого периода, что конфликтует с непрерывной генерацией PWM для STEP-сигналов.
+
+### 7.5. Замечания среднего приоритета
+
+*   **CAN-фильтр** (task_can_handler.c) — принимает все сообщения (mask=0x0000). Необходимо настроить фильтрацию по `CAN_ADDR_MOTOR_BOARD (0x20)` в поле DstAddr.
+*   **TMC2209 инициализация** (task_tmc2209_manager.c) — инициализируются только 4 из 8 драйверов.
+*   **CAN скорость** — дирижер работает на STM32H723 с FDCAN. Необходимо согласовать битрейт (текущий: 500 кбит/с при APB1=32 МГц).
+*   **Изменение PSC/ARR таймера** (motion_driver.c:132) — влияет на все каналы одного таймера одновременно. Это задокументированное ограничение архитектуры "2 таймера по 4 канала".
+
+### 7.6. Архитектурные решения, принятые при обсуждении (05.03.2026)
+
+В ходе детального обсуждения цепочки обработки CAN-сообщений были приняты следующие ключевые решения:
+
+#### 7.6.1. Разделение ответственности: CAN Handler vs Command Parser
+
+**Решение:** Task_CAN_Handler работает только на транспортном уровне, Task_Command_Parser — на прикладном.
+
+**CAN Handler (транспортный уровень):**
+*   Приём CAN-фреймов из `can_rx_queue`
+*   Проверка формата: Extended ID, DstAddr = `CAN_ADDR_MOTOR_BOARD` или `BROADCAST`
+*   Проверка MsgType = `CAN_MSG_TYPE_COMMAND`
+*   Извлечение `cmd_code` (2 байта), `device_id` (1 байт), raw data (до 5 байт)
+*   Упаковка в промежуточную структуру `ParsedCanCommand_t` → `parser_queue`
+*   Отправка фреймов из `can_tx_queue` в CAN-периферию
+*   **NACK** только на транспортные ошибки (неверный формат, неизвестная команда на этом уровне)
+
+**Command Parser (прикладной уровень):**
+*   Приём `ParsedCanCommand_t` из `parser_queue`
+*   Полный парсинг параметров команды (steps, speed, direction из raw data)
+*   Трансляция `device_id` → `physical_motor_id` через `DeviceMapping_ToPhysicalId()`
+*   Формирование `MotionCommand_t` → `motion_queue`
+*   Диспетчеризация команд TMC → `tmc_manager_queue`
+*   **NACK** при невалидном `device_id` (`MOTOR_ID_INVALID`)
+
+#### 7.6.2. Механизм обработки TX: osThreadFlags
+
+**Проблема:** Блокирующее ожидание `osWaitForever` на `can_rx_queue` в CAN Handler делало невозможной своевременную отправку TX-фреймов из `can_tx_queue`.
+
+**Решение:** Использовать `osThreadFlags` (события) вместо прямого ожидания на очереди:
+*   `FLAG_CAN_RX (0x01)` — устанавливается в `HAL_CAN_RxFifo0MsgPendingCallback` после помещения фрейма в `can_rx_queue`
+*   `FLAG_CAN_TX (0x02)` — устанавливается любой задачей после помещения фрейма в `can_tx_queue`
+*   CAN Handler ожидает `osThreadFlagsWait(FLAG_CAN_RX | FLAG_CAN_TX, osFlagsWaitAny, osWaitForever)` и обрабатывает соответствующее событие
+
+Это обеспечивает event-driven обработку без поллинга, минимальное потребление CPU и отсутствие взаимной блокировки RX/TX.
+
+#### 7.6.3. ACK из Motion Controller, а не из CAN Handler
+
+**Решение:** ACK отправляется из Task_Motion_Controller, а не из CAN Handler.
+
+**Обоснование:** ACK означает «команда принята к исполнению». Это невозможно гарантировать на транспортном уровне — нужно проверить, что мотор не занят (`g_motor_active`). Если мотор занят, вместо ACK отправляется NACK с кодом `CAN_ERR_MOTOR_BUSY`.
+
+**Логика в Motion Controller:**
+1.  Получить `MotionCommand_t` из `motion_queue`
+2.  Проверить `motor_id < MOTOR_COUNT`
+3.  Проверить `!g_motor_active[motor_id]`
+4.  Если занят → NACK (`CAN_ERR_MOTOR_BUSY`)
+5.  Если свободен → ACK, затем выполнение команды
+6.  По завершении движения → DONE
+
+Для отправки ACK/NACK/DONE из Motion Controller в `MotionCommand_t` добавлены поля `cmd_code` (uint16_t) и `device_id` (uint8_t).
+
+#### 7.6.4. Формат DONE-ответа
+
+**Формат:** DLC=4, MsgType=`CAN_MSG_TYPE_DATA_DONE_LOG`
+```
+data[0] = CAN_SUB_TYPE_DONE (0x01)
+data[1] = cmd_code & 0xFF
+data[2] = (cmd_code >> 8) & 0xFF
+data[3] = device_id
+```
+
+Этого достаточно для идентификации завершённой операции при последовательном выполнении: `(src_addr + cmd_code + device_id)` однозначно определяют, какая именно команда завершена.
+
+#### 7.6.5. Идентификация команд: job_id не нужен для текущей архитектуры
+
+**Решение:** Не вводить job_id для последовательного режима работы.
+
+**Обоснование:** При последовательном выполнении (текущий режим) каждый мотор выполняет не более одной команды одновременно. Комбинация `(src_addr, cmd_code, device_id)` однозначно идентифицирует операцию. Биты [7:0] 29-bit CAN ID зарезервированы — при переходе к параллельному выполнению их можно использовать как sequence number.
+
+#### 7.6.6. Промежуточная структура ParsedCanCommand_t
+
+**Решение:** Ввести `ParsedCanCommand_t` как элемент `parser_queue` вместо `CAN_Command_t`.
+
+```c
+typedef struct {
+    uint16_t cmd_code;      // CAN-код команды (0x0101, 0x0102, ...)
+    uint8_t  device_id;     // Логический ID устройства из payload
+    uint8_t  data[5];       // Сырые данные параметров (data[3..7] CAN-фрейма)
+    uint8_t  data_len;      // Длина данных параметров
+} ParsedCanCommand_t;
+```
+
+CAN Handler заполняет эту структуру, Command Parser извлекает из неё конкретные параметры в зависимости от `cmd_code`.
+
+#### 7.6.7. Расширение MotionCommand_t
+
+**Решение:** Добавить в `MotionCommand_t` поля для обратной связи:
+*   `uint16_t cmd_code` — CAN-код команды (для ACK/NACK/DONE)
+*   `uint8_t device_id` — логический ID устройства (для DONE)
+
+Эти поля прокидываются через всю цепочку: CAN Handler → Parser → Motion Controller, позволяя Motion Controller формировать корректные ответы дирижеру.
+
+#### 7.6.8. Исключение лопатки миксера из маппинга
+
+**Решение:** `DEV_MIXER_PADDLE_MOTOR (22)` исключён из таблицы маппинга.
+
+**Обоснование:** Лопатка миксера — обычный DC-мотор (вращение), а не шаговый. Управление осуществляется с другой платы. На плате шаговых двигателей 7 активных моторов, физический индекс 7 (`TIM2_CH4`, `PB11`) — свободный резерв.
+
+Маппинг: `1→0, 2→1, 3→2, 10→3, 11→4, 20→5, 21→6`
+
+#### 7.6.9. Command Parser остаётся отдельной задачей
+
+**Решение:** Не объединять Command Parser с CAN Handler.
+
+**Обоснование:** Сохранение Parser как отдельной задачи FreeRTOS обеспечивает:
+*   Чёткое разделение транспортного и прикладного уровней
+*   Изоляцию изменений при модификации протокола
+*   Возможность независимой приоритизации задач
+*   Буферизацию через `parser_queue` — CAN Handler не блокируется на парсинге
+
+### 7.7. Реализация архитектурных решений (06.03.2026)
+
+Все задачи Фазы C Этапа 5 выполнены. Сборка проходит без ошибок и предупреждений.
+
+#### 7.7.1. Изменённые файлы
+
+| Файл | Изменения |
+|:-----|:----------|
+| `App/inc/app_config.h` | Добавлены: `ParsedCanCommand_t`, поля `cmd_code`/`device_id` в `MotionCommand_t`, флаги `FLAG_CAN_RX`/`FLAG_CAN_TX` |
+| `App/inc/app_queues.h` | Добавлен `extern osThreadId_t task_can_handleHandle` |
+| `App/inc/can_protocol.h` | Добавлены прототипы `CAN_SendAck()`, `CAN_SendNackPublic()` |
+| `Core/Src/main.c` | `parser_queue` → `sizeof(ParsedCanCommand_t)` |
+| `Core/Src/stm32f1xx_it.c` | Добавлен `osThreadFlagsSet(FLAG_CAN_RX)` в CAN RX callback |
+| `App/src/tasks/task_can_handler.c` | Полная переработка: транспортный уровень, event-driven через osThreadFlags, публичные ACK/NACK/DONE |
+| `App/src/tasks/task_command_parser.c` | Полная переработка: приём `ParsedCanCommand_t`, трансляция device_id, парсинг параметров по CAN-кодам дирижера |
+| `App/src/tasks/task_motion_controller.c` | Добавлены ACK (после проверки busy), NACK (`MOTOR_BUSY`), DONE, исправлен расчёт direction |
+| `App/src/tasks/task_tmc2209_manager.c` | Раскомментирована инициализация всех 8 драйверов (USART1 + USART2) |
+
+#### 7.7.2. Текущий статус
+
+*   **Сборка:** Успешна, без ошибок и предупреждений
+*   **Готовность к тестированию:** Фаза D — подготовка тестового CAN-кадра
+*   **Известные ограничения:**
+    *   DONE для `CMD_MOVE_RELATIVE`/`CMD_MOVE_ABSOLUTE` пока не отправляется автоматически (нет механизма подсчёта шагов)
+    *   `tmc_manager_queue` временно использует `sizeof(CAN_Command_t)` — будет заменено при интеграции TMC-команд от дирижера

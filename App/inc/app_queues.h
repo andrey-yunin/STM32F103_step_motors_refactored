@@ -17,4 +17,8 @@ extern osMessageQueueId_t parser_queueHandle;      // Для передачи CA
 extern osMessageQueueId_t motion_queueHandle;      // Для передачи заданий движения (Command Parser -> Motion Controller)
 extern osMessageQueueId_t tmc_manager_queueHandle; // Для передачи команд TMC (Command Parser -> TMC Manager)
 
+// Хэндл задачи CAN Handler (для osThreadFlagsSet из ISR и других задач)
+extern osThreadId_t task_can_handleHandle;
+
+
 #endif /* APP_QUEUES_H_ */
