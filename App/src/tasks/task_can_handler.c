@@ -13,19 +13,15 @@
  */
 
 
- #include "task_can_handler.h"
- #include "main.h"
- #include "cmsis_os.h"
- #include "app_queues.h"
- #include "app_config.h"
- #include "can_protocol.h"
+#include "task_can_handler.h"
+#include "main.h"
+#include "cmsis_os.h"
+#include "app_queues.h"
+#include "app_flash.h"
+#include "app_config.h"
+#include "can_protocol.h"
 
-// --- Инкапсулированные данные (будут перенесены в app_flash позже) ---
-static uint8_t g_performer_id = 0x20;
 
-uint8_t CANHandler_GetNodeID(void) {
-    return g_performer_id;
-}
 
  // --- Внешние хэндлы HAL ---
  extern CAN_HandleTypeDef hcan;
@@ -46,7 +42,7 @@ uint8_t CANHandler_GetNodeID(void) {
      tx.header.ExtId = CAN_BUILD_ID(CAN_PRIORITY_NORMAL,
     		 CAN_MSG_TYPE_NACK,
 			 CAN_ADDR_CONDUCTOR,
-			 CAN_ADDR_MOTOR_BOARD);
+			 AppConfig_GetPerformerID());
      tx.header.IDE = CAN_ID_EXT;
      tx.header.RTR = CAN_RTR_DATA;
      tx.header.DLC = 4;
@@ -70,7 +66,7 @@ void CAN_SendDone(uint16_t cmd_code, uint8_t device_id)
     tx.header.ExtId = CAN_BUILD_ID(CAN_PRIORITY_NORMAL,
     		CAN_MSG_TYPE_DATA_DONE_LOG,
 			CAN_ADDR_CONDUCTOR,
-			CAN_ADDR_MOTOR_BOARD);
+			AppConfig_GetPerformerID());
     tx.header.IDE = CAN_ID_EXT;
     tx.header.RTR = CAN_RTR_DATA;
     tx.header.DLC = 4;
@@ -93,7 +89,7 @@ void CAN_SendAck(uint16_t cmd_code)
 	tx.header.ExtId = CAN_BUILD_ID(CAN_PRIORITY_NORMAL,
 			CAN_MSG_TYPE_ACK,
 			CAN_ADDR_CONDUCTOR,
-			CAN_ADDR_MOTOR_BOARD);
+			AppConfig_GetPerformerID());
 	tx.header.IDE = CAN_ID_EXT;
 	tx.header.RTR = CAN_RTR_DATA;
 	tx.header.DLC = 2;
@@ -120,6 +116,7 @@ void CAN_SendNackPublic(uint16_t cmd_code, uint16_t error_code)
 
 void app_start_task_can_handler(void *argument)
 {
+
 	CanRxFrame_t rx_frame;
     CanTxFrame_t tx_frame;
     uint32_t txMailbox;
@@ -131,9 +128,10 @@ void app_start_task_can_handler(void *argument)
     //   Регистр = (ExtId << 3) | CAN_ID_EXT
 
     CAN_FilterTypeDef sFilterConfig;
-
-    uint32_t filter_id   = ((uint32_t)CAN_ADDR_MOTOR_BOARD << 16) << 3 | CAN_ID_EXT;
+    uint32_t performer_id = AppConfig_GetPerformerID();
+    uint32_t filter_id   = (performer_id << 16) << 3 | CAN_ID_EXT;
     uint32_t filter_mask = ((uint32_t)0xFF << 16) << 3 | CAN_ID_EXT;
+
 
     sFilterConfig.FilterBank = 0;
     sFilterConfig.FilterMode = CAN_FILTERMODE_IDMASK;
@@ -186,7 +184,7 @@ void app_start_task_can_handler(void *argument)
                 uint8_t dst_addr = CAN_GET_DST_ADDR(can_id);
 
                 // Проверяем адресацию
-                if (dst_addr != CAN_ADDR_MOTOR_BOARD && dst_addr != CAN_ADDR_BROADCAST) {
+                if (dst_addr != AppConfig_GetPerformerID() && dst_addr != CAN_ADDR_BROADCAST) {
                 	continue;
                 	}
 

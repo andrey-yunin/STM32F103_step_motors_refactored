@@ -22,6 +22,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "app_flash.h"
 #include "task_dispatcher.h"
 #include "task_can_handler.h"
 #include "task_motion_controller.h"
@@ -157,6 +158,8 @@ int main(void)
   MX_USART1_UART_Init();
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
+
+  AppConfig_Init();
   // Создание очередей FreeRTOS с использованием именованных констант
 can_rx_queueHandle = osMessageQueueNew(CAN_RX_QUEUE_LEN, sizeof(CanRxFrame_t), NULL); // CAN-фрейм: на прием
 can_tx_queueHandle = osMessageQueueNew(CAN_TX_QUEUE_LEN, sizeof(CanTxFrame_t), NULL); // CAN-фрейм на отправку
