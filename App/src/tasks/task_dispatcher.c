@@ -1,5 +1,5 @@
 /*
- * task_command_parser.c
+ * task_dispatcher.c
  *
  *  Created on: Dec 8, 2025
  *      Author: andrey
@@ -8,32 +8,32 @@
  *      Author: andrey
  *
  *  Прикладной уровень. Отвечает за:
- *  - Приём ParsedCanCommand_t из parser_queue (от CAN Handler)
+ *  - Приём ParsedCanCommand_t из dispatcher_queue (от CAN Handler)
  *  - Трансляцию device_id → physical_motor_id
  *  - Парсинг параметров команд (steps, speed, direction)
  *  - Формирование MotionCommand_t → motion_queue
  *  - NACK при невалидном device_id
  */
 
-#include "task_command_parser.h"
 #include "main.h"
 #include "cmsis_os.h"
 #include "app_queues.h"
 #include "app_config.h"
 #include <string.h>
+#include "task_dispatcher.h"
 #include "can_protocol.h"
 #include "command_protocol.h"
 #include "device_mapping.h"
 
-void app_start_task_command_parser(void *argument)
+void app_start_task_dispatcher(void *argument)
 {
 	ParsedCanCommand_t parsed;    // Буфер для принятой команды от CAN Handler
     MotionCommand_t motion_cmd;   // Буфер для команды движения
 
     for (;;)
     	{
-    	// Ожидаем команду из parser_queue
-    	if (osMessageQueueGet(parser_queueHandle, &parsed, NULL, osWaitForever) != osOK) {
+    	// Ожидаем команду из dispatcher_queue
+    	if (osMessageQueueGet(dispatcher_queueHandle, &parsed, NULL, osWaitForever) != osOK) {
     		continue;
     		}
 

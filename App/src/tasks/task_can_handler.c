@@ -205,7 +205,7 @@ void app_start_task_can_handler(void *argument)
                 	}
 
                 // Отправляем в parser_queue
-                osMessageQueuePut(parser_queueHandle, &parsed, 0, 0);
+                osMessageQueuePut(dispatcher_queueHandle, &parsed, 0, 0);
                 }
     		}
 

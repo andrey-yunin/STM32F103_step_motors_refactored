@@ -22,9 +22,9 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "task_dispatcher.h"
 
 #include "task_can_handler.h"
-#include "task_command_parser.h"
 #include "task_motion_controller.h"
 #include "task_tmc2209_manager.h"
 #include "app_config.h"
@@ -69,10 +69,10 @@ const osThreadAttr_t task_can_handle_attributes = {
   .stack_size = 128 * 4,
   .priority = (osPriority_t) osPriorityHigh,
 };
-/* Definitions for task_command_pa */
-osThreadId_t task_command_paHandle;
-const osThreadAttr_t task_command_pa_attributes = {
-  .name = "task_command_pa",
+/* Definitions for task_dispatcher */
+osThreadId_t task_dispatcherHandle;
+const osThreadAttr_t task_dispatcher_attributes = {
+  .name = "task_dispatcher",
   .stack_size = 256 * 4,
   .priority = (osPriority_t) osPriorityNormal,
 };
@@ -94,7 +94,7 @@ const osThreadAttr_t task_tmc2209_ma_attributes = {
 
 osMessageQueueId_t can_rx_queueHandle;
 osMessageQueueId_t can_tx_queueHandle;
-osMessageQueueId_t parser_queueHandle;
+osMessageQueueId_t dispatcher_queueHandle;
 osMessageQueueId_t motion_queueHandle;
 osMessageQueueId_t tmc_manager_queueHandle;
 
@@ -110,7 +110,7 @@ static void MX_TIM2_Init(void);
 static void MX_USART1_UART_Init(void);
 static void MX_USART2_UART_Init(void);
 void start_task_can_handler(void *argument);
-void start_task_command_parser(void *argument);
+void start_task_dispatcher(void *argument);
 void start_task_motion_controller(void *argument);
 void start_task_tmc2209_manager(void *argument);
 
@@ -162,13 +162,13 @@ int main(void)
   // Создание очередей FreeRTOS с использованием именованных констант
 can_rx_queueHandle = osMessageQueueNew(CAN_RX_QUEUE_LEN, sizeof(CanRxFrame_t), NULL); // CAN-фрейм: на прием
 can_tx_queueHandle = osMessageQueueNew(CAN_TX_QUEUE_LEN, sizeof(CanTxFrame_t), NULL); // CAN-фрейм на отправку
-parser_queueHandle = osMessageQueueNew(PARSER_QUEUE_LEN, sizeof(ParsedCanCommand_t), NULL); // Структура команды
+dispatcher_queueHandle = osMessageQueueNew(PARSER_QUEUE_LEN, sizeof(ParsedCanCommand_t), NULL); // Структура команды
 motion_queueHandle = osMessageQueueNew(MOTION_QUEUE_LEN, sizeof(MotionCommand_t), NULL); // Задание на движение
 tmc_manager_queueHandle = osMessageQueueNew(TMC_MANAGER_QUEUE_LEN, sizeof(CAN_Command_t), NULL); // Команда TMC (пока используем CAN_Command_t)
 
 
 // Проверка успешности создания очередей
-if (can_rx_queueHandle == NULL || parser_queueHandle == NULL || motion_queueHandle == NULL || tmc_manager_queueHandle == NULL || can_tx_queueHandle == NULL) {
+if (can_rx_queueHandle == NULL || dispatcher_queueHandle == NULL || motion_queueHandle == NULL || tmc_manager_queueHandle == NULL || can_tx_queueHandle == NULL) {
 	Error_Handler();
     }
 
@@ -198,8 +198,8 @@ if (can_rx_queueHandle == NULL || parser_queueHandle == NULL || motion_queueHand
   /* creation of task_can_handle */
   task_can_handleHandle = osThreadNew(start_task_can_handler, NULL, &task_can_handle_attributes);
 
-  /* creation of task_command_pa */
-  task_command_paHandle = osThreadNew(start_task_command_parser, NULL, &task_command_pa_attributes);
+  /* creation of task_dispatcher */
+  task_dispatcherHandle = osThreadNew(start_task_dispatcher, NULL, &task_dispatcher_attributes);
 
   /* creation of task_motion_con */
   task_motion_conHandle = osThreadNew(start_task_motion_controller, NULL, &task_motion_con_attributes);
@@ -680,23 +680,23 @@ void start_task_can_handler(void *argument)
   /* USER CODE END 5 */
 }
 
-/* USER CODE BEGIN Header_start_task_command_parser */
+/* USER CODE BEGIN Header_start_task_dispatcher */
 /**
-* @brief Function implementing the task_command_pa thread.
+* @brief Function implementing the task_dispatcher thread.
 * @param argument: Not used
 * @retval None
 */
-/* USER CODE END Header_start_task_command_parser */
-void start_task_command_parser(void *argument)
+/* USER CODE END Header_start_task_dispatcher */
+void start_task_dispatcher(void *argument)
 {
-  /* USER CODE BEGIN start_task_command_parser */
-  app_start_task_command_parser(argument);
+  /* USER CODE BEGIN start_task_dispatcher */
+  app_start_task_dispatcher(argument);
   /* Infinite loop */
   for(;;)
   {
     osDelay(1);
   }
-  /* USER CODE END start_task_command_parser */
+  /* USER CODE END start_task_dispatcher */
 }
 
 /* USER CODE BEGIN Header_start_task_motion_controller */
