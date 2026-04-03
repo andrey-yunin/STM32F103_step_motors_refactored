@@ -37,6 +37,9 @@ void app_start_task_dispatcher(void *argument)
     		continue;
     		}
 
+        // --- ЗОЛОТОЙ ЭТАЛОН: Немедленное подтверждение (ACK) ---
+        CAN_SendAck(parsed.cmd_code);
+
     	// Трансляция логического device_id в физический motor_id
     	uint8_t physical_motor_id = DeviceMapping_ToPhysicalId(parsed.device_id);
     	if (physical_motor_id == MOTOR_ID_INVALID) {

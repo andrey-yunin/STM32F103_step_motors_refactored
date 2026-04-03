@@ -20,6 +20,13 @@
  #include "app_config.h"
  #include "can_protocol.h"
 
+// --- Инкапсулированные данные (будут перенесены в app_flash позже) ---
+static uint8_t g_performer_id = 0x20;
+
+uint8_t CANHandler_GetNodeID(void) {
+    return g_performer_id;
+}
+
  // --- Внешние хэндлы HAL ---
  extern CAN_HandleTypeDef hcan;
 

@@ -12,18 +12,22 @@
 #include "app_config.h" // Для MOTOR_COUNT
 #include "app_queues.h"
 
+// --- Инкапсулированные данные драйверов ---
+static TMC2209_Handle_t tmc_drivers[MOTOR_COUNT];
+
+TMC2209_Handle_t* TMCManager_GetHandle(uint8_t motor_id) {
+    if (motor_id >= MOTOR_COUNT) return NULL;
+    return &tmc_drivers[motor_id];
+}
 
 // Внешние переменные, объявленные в main.c
-extern TMC2209_Handle_t tmc_drivers[MOTOR_COUNT];
 extern UART_HandleTypeDef huart1; // Хэндл UART1
 extern UART_HandleTypeDef huart2; // Хэндл UART2
-
 
 void app_start_task_tmc2209_manager(void *argument)
 {
 	 // Ждем небольшую паузу, чтобы все остальные части системы успели запуститься
 	 osDelay(100);
-
 
 	 // --- Инициализация всех 8-ми драйверов ---
 	 // Моторы 0-3 на USART1 (slave_addr 0-3)

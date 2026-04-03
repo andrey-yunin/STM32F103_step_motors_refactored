@@ -19,11 +19,32 @@
 #include "cmsis_os.h"
 #include "motion_planner.h"
 #include "app_config.h"
-#include "app_globals.h"
 #include "app_queues.h"
 #include "motion_driver.h"
 #include "command_protocol.h"
 #include "can_protocol.h"
+#include <string.h>
+
+// --- Инкапсулированные данные (скрыты от других модулей) ---
+static MotorMotionState_t motor_states[MOTOR_COUNT];
+static volatile bool g_motor_active[MOTOR_COUNT] = {false};
+
+// --- Публичный API доступа к состоянию (Thread-safe) ---
+
+bool MotionController_IsMotorActive(uint8_t motor_id) {
+    if (motor_id >= MOTOR_COUNT) return false;
+    return g_motor_active[motor_id];
+}
+
+void MotionController_SetMotorActive(uint8_t motor_id, bool active) {
+    if (motor_id >= MOTOR_COUNT) return;
+    g_motor_active[motor_id] = active;
+}
+
+void MotionController_GetMotorState(uint8_t motor_id, MotorMotionState_t *out_state) {
+    if (motor_id >= MOTOR_COUNT || out_state == NULL) return;
+    memcpy(out_state, &motor_states[motor_id], sizeof(MotorMotionState_t));
+}
 
 void app_start_task_motion_controller(void *argument)
 {
@@ -57,9 +78,6 @@ void app_start_task_motion_controller(void *argument)
                                 CAN_SendNackPublic(cmd_code, CAN_ERR_MOTOR_BUSY);
                                 continue;
                         }
-
-                        // --- ACK: команда принята к исполнению ---
-                        CAN_SendAck(cmd_code);
 
                         // --- Обработка команды ---
                         switch (received_motion_cmd.command_id)
@@ -129,3 +147,4 @@ void app_start_task_motion_controller(void *argument)
                 }
         }
   }
+

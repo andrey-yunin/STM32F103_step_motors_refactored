@@ -24,11 +24,10 @@
 /* USER CODE BEGIN Includes */
 #include "main.h"
 #include "cmsis_os.h"
-#include "app_queues.h" // Для can_rx_queueHandle
-#include "app_config.h" // Чтобы видеть CanFrame_t
-#include "motion_driver.h"
 #include "motion_planner.h"
-#include "app_globals.h"
+#include "app_config.h"
+#include "app_queues.h"
+#include "motion_driver.h"
 
 
 

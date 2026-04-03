@@ -231,16 +231,23 @@
         **Цель:** Стандартизация архитектуры по образцу платы термодатчиков: внедрение единого Диспетчера, динамического NodeID и сервисных команд 0xFxxx.
 
         ### **Шаг 1: Переименование и унификация (Стабилизация)**
-        - [ ] **1.1. Переименование файлов и сущностей:**
-        - [ ] `task_command_parser.c/h` -> `task_dispatcher.c/h`
-        - [ ] `app_start_task_command_parser` -> `app_start_task_dispatcher`
-        - [ ] `parser_queueHandle` -> `dispatcher_queueHandle`
-        - [ ] **1.2. Обновление базового протокола (`can_protocol.h`):**
-        - [ ] Добавление определений сервисных команд (0xF0xx).
-        - [ ] Добавление Device Type ID (0x20 для моторов).
-        - [ ] Определение Magic Keys для Reboot/Factory Reset.
-        - [ ] **1.3. Синхронизация `app_config.h`:**
-        - [ ] Приведение структуры `ParsedCanCommand_t` к единому стандарту.
+        - [x] **1.1. Переименование файлов и сущностей:**
+            - [x] `task_command_parser.c/h` -> `task_dispatcher.c/h`
+            - [x] `app_start_task_command_parser` -> `app_start_task_dispatcher`
+            - [x] `parser_queueHandle` -> `dispatcher_queueHandle`
+        - [x] **1.2. Обновление базового протокола (`can_protocol.h`):**
+            - [x] Добавление определений сервисных команд (0xF0xx).
+            - [x] Добавление Device Type ID (0x20 для моторов).
+            - [x] Определение Magic Keys для Reboot/Factory Reset.
+        - [x] **1.3. Синхронизация `app_config.h`:**
+                    - [x] Приведение структуры `ParsedCanCommand_t` к единому стандарту.
+                    - [x] Унификация имен констант очередей (`DISPATCHER_QUEUE_LEN`).
+        - [x] **1.4. Инкапсуляция и защита глобальных переменных:**
+
+            - [x] Создание Mutex-защищенных геттеров/сеттеров в прикладных задачах.
+            - [x] Изоляция массивов `motor_states` и `tmc_drivers` (перенос в `task_motion_controller.c` и `task_tmc2209_manager.c`).
+            - [x] Удаление файлов `app_globals.h/c` за ненадобностью.
+            - [x] Перенос `g_performer_id` (временное владение в `task_can_handler.c`).
 
         ### **Шаг 2: Перенос функционала и ревайринг (Logic Migration)**
         - [ ] **2.1. Рефакторинг цикла Диспетчера:**
