@@ -76,9 +76,24 @@ void AppConfig_Init(void) {
     		g_app_config.motor_map[i] = 140 + i;
     		}
     	g_app_config.checksum = CalculateCRC16(&g_app_config);
-    	AppConfig_Commit(); // Сохраняем дефолт
+        // Не делаем автоматический Commit, чтобы не изнашивать Flash при ошибках чтения.
+        // Запись произойдет только при явной команде Commit.
     	}
     }
+
+void AppConfig_FactoryReset(void) {
+    if (osMutexAcquire(configMutex, osWaitForever) == osOK) {
+        HAL_FLASH_Unlock();
+        FLASH_EraseInitTypeDef EraseInitStruct;
+        uint32_t PageError = 0;
+        EraseInitStruct.TypeErase = FLASH_TYPEERASE_PAGES;
+        EraseInitStruct.PageAddress = APP_CONFIG_FLASH_ADDR;
+        EraseInitStruct.NbPages = 1;
+        HAL_FLASHEx_Erase(&EraseInitStruct, &PageError);
+        HAL_FLASH_Lock();
+        osMutexRelease(configMutex);
+    }
+}
 
 uint8_t AppConfig_GetMotorLogicalID(uint8_t physical_idx) {
 	uint8_t id = 0xFF;
@@ -99,7 +114,7 @@ void AppConfig_SetMotorLogicalID(uint8_t physical_idx, uint8_t logical_id) {
 uint32_t AppConfig_GetPerformerID(void) {
 	uint32_t id = 0x20;
 	if (osMutexAcquire(configMutex, osWaitForever) == osOK) {
-		id = g_app_config.performer_id;
+		id = (uint32_t)g_app_config.performer_id;
 		osMutexRelease(configMutex);
 		}
 	return id;
@@ -107,7 +122,7 @@ uint32_t AppConfig_GetPerformerID(void) {
 
 void AppConfig_SetPerformerID(uint32_t id) {
 	if (osMutexAcquire(configMutex, osWaitForever) == osOK) {
-		g_app_config.performer_id = id;
+		g_app_config.performer_id = (uint8_t)id;
 		osMutexRelease(configMutex);
 		}
 }

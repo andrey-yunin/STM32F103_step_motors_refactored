@@ -15,17 +15,28 @@
 // =============================================================================
 
 #define MOTOR_COUNT                 8 // Общее количество моторов в системе
+#define MOTOR_ID_INVALID            0xFF // Значение для неинициализированного или неверного мотора
+
+// Версия прошивки
+#define FW_REV_MAJOR                0x01
+#define FW_REV_MINOR                0x00
+#define FW_REV_PATCH                0x00 // Добавлено для синхронизации
+
+// Тип устройства (DDS-240 Standard)
+#define CAN_DEVICE_TYPE_MOTOR       0x20 // Исполнитель: Моторы
+#define CAN_DEVICE_TYPE_THERMO      0x40 // Исполнитель: Термодатчики (для справки)
+
 #define CAN_DATA_MAX_LEN            8 // Максимальная длина поля данных CAN-фрейма
 
 // =============================================================================
 //                             НАСТРОЙКИ ОЧЕРЕДЕЙ FREERTOS
 // =============================================================================
 
-#define CAN_RX_QUEUE_LEN            10
-#define CAN_TX_QUEUE_LEN            10
+#define CAN_RX_QUEUE_LEN            16 // Увеличено для надежности
+#define CAN_TX_QUEUE_LEN            16 // Увеличено для надежности
 #define DISPATCHER_QUEUE_LEN        10
-#define MOTION_QUEUE_LEN            5
-#define TMC_MANAGER_QUEUE_LEN       5
+#define MOTION_QUEUE_LEN            8  // Увеличено для поддержки всех 8 моторов одновременно
+#define TMC_MANAGER_QUEUE_LEN       8  // Увеличено
 
 // Флаги для Task_CAN_Handler (osThreadFlags)
 #define FLAG_CAN_RX                 0x01

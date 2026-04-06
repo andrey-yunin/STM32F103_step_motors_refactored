@@ -110,6 +110,26 @@ void CAN_SendNackPublic(uint16_t cmd_code, uint16_t error_code)
 	CAN_SendNack(cmd_code, error_code);
 	}
 
+
+void CAN_SendData(uint16_t cmd_code, uint8_t *data, uint8_t len) {
+    CanTxFrame_t tx;
+    tx.header.ExtId = CAN_BUILD_ID(CAN_PRIORITY_NORMAL, CAN_MSG_TYPE_DATA_DONE_LOG, CAN_ADDR_CONDUCTOR, AppConfig_GetPerformerID());
+    tx.header.IDE = CAN_ID_EXT;
+    tx.header.RTR = CAN_RTR_DATA;
+    tx.header.DLC = 8; // В эталоне всегда 8 для пакетов DATA
+
+    tx.data[0] = CAN_SUB_TYPE_DATA;
+    tx.data[1] = 0x80; // --- ЗОЛОТОЙ ЭТАЛОН: Sequence Info (EOT=1, Seq=0) ---
+
+    // Копируем до 6 байт прикладных данных
+    for (uint8_t i = 0; i < len && i < 6; i++) {
+        tx.data[2 + i] = data[i];
+    }
+
+    osMessageQueuePut(can_tx_queueHandle, &tx, 0, 0);
+    osThreadFlagsSet(task_can_handleHandle, FLAG_CAN_TX);
+}
+
 // ============================================================
 // Основная задача
 // ============================================================
@@ -121,16 +141,16 @@ void app_start_task_can_handler(void *argument)
     CanTxFrame_t tx_frame;
     uint32_t txMailbox;
 
-    // --- Настройка CAN-фильтра ---
-    // Фильтруем по DstAddr = CAN_ADDR_MOTOR_BOARD (0x20) в 29-bit Extended ID
-    // DstAddr находится в битах [23:16] CAN ID
-    // FilterId и FilterMask в регистрах STM32 для 32-bit scale:
-    //   Регистр = (ExtId << 3) | CAN_ID_EXT
-
+    // --- Настройка CAN-фильтра (Advanced: PerformerID + Broadcast) ---
     CAN_FilterTypeDef sFilterConfig;
-    uint32_t performer_id = AppConfig_GetPerformerID();
-    uint32_t filter_id   = (performer_id << 16) << 3 | CAN_ID_EXT;
-    uint32_t filter_mask = ((uint32_t)0xFF << 16) << 3 | CAN_ID_EXT;
+    
+    // ВНИМАНИЕ: Чтобы принимать и PerformerID, и Broadcast (0x00), 
+    // аппаратная маска для поля DstAddr [23:16] должна быть 0x00, 
+    // либо нужно использовать два банка фильтров. 
+    // Для надежности используем программную фильтрацию DstAddr внутри задачи.
+    
+    uint32_t filter_id   = 0x00000000 | CAN_ID_EXT; // Принимаем всё (фильтрация программно)
+    uint32_t filter_mask = 0x00000000 | CAN_ID_EXT;
 
 
     sFilterConfig.FilterBank = 0;
@@ -183,7 +203,7 @@ void app_start_task_can_handler(void *argument)
                 uint8_t msg_type = CAN_GET_MSG_TYPE(can_id);
                 uint8_t dst_addr = CAN_GET_DST_ADDR(can_id);
 
-                // Проверяем адресацию
+                // --- Программная фильтрация адреса (PerformerID или Broadcast) ---
                 if (dst_addr != AppConfig_GetPerformerID() && dst_addr != CAN_ADDR_BROADCAST) {
                 	continue;
                 	}
@@ -219,7 +239,18 @@ void app_start_task_can_handler(void *argument)
     		{
     		while (osMessageQueueGet(can_tx_queueHandle, &tx_frame, NULL, 0) == osOK)
     			{
-    			HAL_CAN_AddTxMessage(&hcan, &tx_frame.header, tx_frame.data, &txMailbox);
+                    // --- Защита от переполнения Mailbox (Advanced) ---
+                    uint32_t start_tick = osKernelGetTickCount();
+                    while (HAL_CAN_GetTxMailboxesFreeLevel(&hcan) == 0) {
+                        if ((osKernelGetTickCount() - start_tick) > 10) { // Таймаут 10мс
+                            break; 
+                        }
+                        osDelay(1);
+                    }
+
+                    if (HAL_CAN_GetTxMailboxesFreeLevel(&hcan) > 0) {
+                        HAL_CAN_AddTxMessage(&hcan, &tx_frame.header, tx_frame.data, &txMailbox);
+                    }
     			}
     		}
     	}

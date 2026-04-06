@@ -23,8 +23,9 @@
  */
  typedef struct {
 	 uint32_t magic;             // Метка инициализации памяти
-     uint32_t performer_id;      // Настраиваемый CAN NodeID платы (0x20)
+     uint8_t  performer_id;      // Настраиваемый CAN NodeID платы (0x20)
      uint8_t  motor_map[8];      // Таблица маппинга: [Idx] -> Logical ID
+     uint8_t  reserved_bytes[3]; // Выравнивание до 4 байт
      uint16_t reserved;          // Резерв для выравнивания
      uint16_t checksum;          // Контрольная сумма структуры
 } AppConfig_t;
@@ -39,6 +40,11 @@ void AppConfig_GetMCU_UID(uint8_t* out_uid);
  * @brief Инициализирует конфигурацию (загрузка из Flash или Default) и создает Mutex.
  */
 void AppConfig_Init(void);
+
+/**
+ * @brief Сброс настроек к заводским (очистка Flash).
+ */
+void AppConfig_FactoryReset(void);
 
 /**
  * @brief Безопасное чтение логического ID для физического индекса драйвера.
