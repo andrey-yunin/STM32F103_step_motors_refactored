@@ -51,16 +51,10 @@ void app_start_task_dispatcher(void *argument)
     		case CAN_CMD_MOTOR_START_CONTINUOUS:
     		case CAN_CMD_MOTOR_STOP:
             {
-                // --- Трансляция через Таблицу Маппинга во Flash ---
-                uint8_t physical_motor_id = MOTOR_ID_INVALID;
-                for (uint8_t i = 0; i < MOTOR_COUNT; i++) {
-                    if (AppConfig_GetMotorLogicalID(i) == parsed.device_id) {
-                        physical_motor_id = i;
-                        break;
-                    }
-                }
+                // Директива 2.0: Используем 0-based индекс напрямую (device_id == physical_id)
+                uint8_t physical_motor_id = parsed.device_id;
 
-                if (physical_motor_id == MOTOR_ID_INVALID) {
+                if (physical_motor_id >= MOTOR_COUNT) {
                     CAN_SendNackPublic(parsed.cmd_code, CAN_ERR_INVALID_MOTOR_ID);
                     continue;
                 }
@@ -81,7 +75,7 @@ void app_start_task_dispatcher(void *argument)
                     motion_cmd.command_id = CMD_MOVE_RELATIVE;
                     motion_cmd.steps = (uint32_t)((steps >= 0) ? steps : -steps);
                     motion_cmd.direction = (steps >= 0) ? 1 : 0;
-                    // Согласно аудиту Дирижера: speed упакован как speed >> 2
+                    // Согласно Директиве 2.0: speed упакован как speed >> 2 (в байте data[4])
                     motion_cmd.speed_steps_per_sec = (uint32_t)parsed.data[4] << 2;
                 } 
                 else if (parsed.cmd_code == CAN_CMD_MOTOR_HOME) {
@@ -92,6 +86,7 @@ void app_start_task_dispatcher(void *argument)
                 }
                 else if (parsed.cmd_code == CAN_CMD_MOTOR_START_CONTINUOUS) {
                     motion_cmd.command_id = CMD_SET_SPEED;
+                    // Согласно Директиве 2.0: speed упакован как speed / 100
                     motion_cmd.speed_steps_per_sec = (uint32_t)parsed.data[0] * 100;
                 }
                 else if (parsed.cmd_code == CAN_CMD_MOTOR_STOP) {
@@ -134,7 +129,7 @@ void app_start_task_dispatcher(void *argument)
 
             case CAN_CMD_SRV_REBOOT: {
                 uint16_t key = (uint16_t)(parsed.data[0] | (parsed.data[1] << 8));
-                if (key == SRV_MAGIC_REBOOT) {
+                if (key == SRV_MAGIC_REBOOT) { // 0x55AA
                     CAN_SendDone(parsed.cmd_code, 0);
                     osDelay(100); 
                     NVIC_SystemReset();
@@ -153,9 +148,9 @@ void app_start_task_dispatcher(void *argument)
                 break;
             }
 
-            case 0xF006: { // CAN_CMD_SRV_FACTORY_RESET (Золотой стандарт)
+            case 0xF006: { // CAN_CMD_SRV_FACTORY_RESET (Директива 2.0: Key 0xDEAD)
                 uint16_t key = (uint16_t)(parsed.data[0] | (parsed.data[1] << 8));
-                if (key == 0xDEAD) { // SRV_MAGIC_FACTORY_RESET
+                if (key == 0xDEAD) {
                     AppConfig_FactoryReset();
                     CAN_SendDone(parsed.cmd_code, 0);
                     osDelay(100);

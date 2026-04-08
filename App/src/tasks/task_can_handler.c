@@ -213,19 +213,19 @@ void app_start_task_can_handler(void *argument)
                 	continue;
                 	}
 
-                // Минимальная валидация: DLC >= 3 (cmd_code:2 + device_id:1)
-                if (rx_frame.header.DLC < 3) {
-                	continue;
-                	}
+                // Директива 2.0: Строгий DLC=8 для всех команд типа COMMAND
+                if (rx_frame.header.DLC != 8) {
+                    continue;
+                }
 
                 // Упаковываем в ParsedCanCommand_t
                 ParsedCanCommand_t parsed;
                 parsed.cmd_code = (uint16_t)(rx_frame.data[0] |
                 		((uint16_t)rx_frame.data[1] << 8));
-                parsed.device_id = rx_frame.data[2];
-                parsed.data_len = (rx_frame.header.DLC > 3) ? (rx_frame.header.DLC - 3) : 0;
+                parsed.device_id = rx_frame.data[2]; // Это теперь 0-based индекс
+                parsed.data_len = 5; // Всегда 5 байт (data[3..7])
 
-                for (uint8_t i = 0; i < parsed.data_len && i < 5; i++) {
+                for (uint8_t i = 0; i < 5; i++) {
                 	parsed.data[i] = rx_frame.data[3 + i];
                 	}
 
