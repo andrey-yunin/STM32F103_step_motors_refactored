@@ -11,7 +11,6 @@
 #include <stdint.h> // Для void* argument
 
 // Основная функция-обработчик для задачи  task_start_task_tmc2209_manager
-
 void app_start_task_tmc2209_manager(void *argument);
 
 #endif /* TASK_TMC2209_MANAGER_H_ */

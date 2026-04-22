@@ -160,19 +160,20 @@ int main(void)
   /* USER CODE BEGIN 2 */
 
   AppConfig_Init();
+
   // Создание очередей FreeRTOS с использованием именованных констант
-can_rx_queueHandle = osMessageQueueNew(CAN_RX_QUEUE_LEN, sizeof(CanRxFrame_t), NULL); // CAN-фрейм: на прием
-can_tx_queueHandle = osMessageQueueNew(CAN_TX_QUEUE_LEN, sizeof(CanTxFrame_t), NULL); // CAN-фрейм на отправку
-dispatcher_queueHandle = osMessageQueueNew(DISPATCHER_QUEUE_LEN, sizeof(ParsedCanCommand_t), NULL); // Структура команды
-motion_queueHandle = osMessageQueueNew(MOTION_QUEUE_LEN, sizeof(MotionCommand_t), NULL); // Задание на движение
-tmc_manager_queueHandle = osMessageQueueNew(TMC_MANAGER_QUEUE_LEN, sizeof(CAN_Command_t), NULL); // Команда TMC (пока используем CAN_Command_t)
+  can_rx_queueHandle = osMessageQueueNew(CAN_RX_QUEUE_LEN, sizeof(CanRxFrame_t), NULL); // CAN-фрейм: на прием
+  can_tx_queueHandle = osMessageQueueNew(CAN_TX_QUEUE_LEN, sizeof(CanTxFrame_t), NULL); // CAN-фрейм на отправку
+  dispatcher_queueHandle = osMessageQueueNew(DISPATCHER_QUEUE_LEN, sizeof(ParsedCanCommand_t), NULL); // Структура команды
+  motion_queueHandle = osMessageQueueNew(MOTION_QUEUE_LEN, sizeof(MotionCommand_t), NULL); // Задание на движение
+  tmc_manager_queueHandle = osMessageQueueNew(TMC_MANAGER_QUEUE_LEN, sizeof(CAN_Command_t), NULL); // Команда TMC
 
-
-// Проверка успешности создания очередей
-if (can_rx_queueHandle == NULL || dispatcher_queueHandle == NULL || motion_queueHandle == NULL || tmc_manager_queueHandle == NULL || can_tx_queueHandle == NULL) {
-	Error_Handler();
-    }
-
+  // Проверка успешности создания очередей
+  if (can_rx_queueHandle == NULL || dispatcher_queueHandle == NULL ||
+      motion_queueHandle == NULL || tmc_manager_queueHandle == NULL ||
+      can_tx_queueHandle == NULL) {
+    Error_Handler();
+  }
 
   /* USER CODE END 2 */
 
@@ -210,6 +211,13 @@ if (can_rx_queueHandle == NULL || dispatcher_queueHandle == NULL || motion_queue
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
+  if (task_can_handleHandle == NULL ||
+      task_dispatcherHandle == NULL ||
+      task_motion_conHandle == NULL ||
+      task_tmc2209_maHandle == NULL) {
+    Error_Handler();
+  }
+
   /* USER CODE END RTOS_THREADS */
 
   /* USER CODE BEGIN RTOS_EVENTS */
@@ -294,7 +302,7 @@ static void MX_CAN_Init(void)
 
   /* USER CODE END CAN_Init 1 */
   hcan.Instance = CAN1;
-  hcan.Init.Prescaler = 4;
+  hcan.Init.Prescaler = 2;
   hcan.Init.Mode = CAN_MODE_NORMAL;
   hcan.Init.SyncJumpWidth = CAN_SJW_1TQ;
   hcan.Init.TimeSeg1 = CAN_BS1_11TQ;
@@ -304,7 +312,7 @@ static void MX_CAN_Init(void)
   hcan.Init.AutoWakeUp = DISABLE;
   hcan.Init.AutoRetransmission = DISABLE;
   hcan.Init.ReceiveFifoLocked = DISABLE;
-  hcan.Init.TransmitFifoPriority = DISABLE;
+  hcan.Init.TransmitFifoPriority = ENABLE;
   if (HAL_CAN_Init(&hcan) != HAL_OK)
   {
     Error_Handler();

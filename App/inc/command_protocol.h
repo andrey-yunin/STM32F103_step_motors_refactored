@@ -12,7 +12,7 @@
 
 // ID команд, которые "дирижер" может отправлять "исполнителю"
 typedef enum {
-	CMD_MOVE_ABSOLUTE       = 0x01, // Движение в абсолютную позицию
+    CMD_MOVE_ABSOLUTE       = 0x01, // Движение в абсолютную позицию
     CMD_MOVE_RELATIVE       = 0x02, // Движение на заданное количество шагов
     CMD_SET_SPEED           = 0x03, // Установить максимальную скорость
     CMD_SET_ACCELERATION    = 0x04, // Установить ускорение
@@ -21,20 +21,14 @@ typedef enum {
     CMD_SET_CURRENT         = 0x07, // Установить рабочий ток
     CMD_ENABLE_MOTOR        = 0x08, // Включить/выключить драйвер
     CMD_PERFORMER_ID_SET    = 0x09, // Команда для установки ID исполнителя
-    } CommandID_t;
-
+} CommandID_t;
 
 // Структура CAN-сообщения для парсинга
 // Это поможет нам легко разбирать входящие CAN-пакеты
 typedef struct {
-	uint8_t     motor_id;   // ID мотора (0-7). Для команд Performer_ID_SET может быть 0xFF.
+    uint8_t     motor_id;   // ID мотора (0-7). Для команд Performer_ID_SET может быть 0xFF.
     CommandID_t command_id; // ID команды
     int32_t     payload;    // 32-битное значение (позиция, скорость, ID исполнителя и т.д.)
-    } CAN_Command_t;
-
-
-
-
-
+} CAN_Command_t;
 
 #endif /* COMMAND_PROTOCOL_H_ */

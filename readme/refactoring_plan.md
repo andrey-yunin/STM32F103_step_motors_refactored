@@ -305,3 +305,218 @@
         *   **Independent Speed Control:** Если потребуется независимое движение моторов на разных скоростях, необходим переход на **Interrupt-based DDA** на базе `TIM3` (20-50 кГц).
         *   **Advanced Planning:** Внедрение S-кривых (S-Curve Acceleration) для минимизации рывков при работе с тяжелыми нагрузками.
         *   **Step Counter DONE:** Реализация прерывания для точного подсчета шагов и автоматической отправки `DONE` (в текущей версии `DONE` отправляется контроллером движения по логическому завершению цикла).
+
+---
+
+## 10. Этап: CAN-level стабилизация перед тестами без нагрузок (22.04.2026)
+
+**Цель:** Проверить и довести текущую реализацию CAN-уровня до минимально совместимого состояния с DDS-240 pattern, не добавляя новый диагностический функционал.
+
+### 10.1. Выполнено
+
+- [x] **CAN bitrate:** проект переведен на `1 Mbit/s`:
+    - [x] `.ioc`: `CAN.CalculateBaudRate=1000000`, `CAN.Prescaler=2`.
+    - [x] `main.c`: `hcan.Init.Prescaler = 2`, `BS1=11TQ`, `BS2=4TQ`.
+- [x] **TX FIFO priority:** включен `TransmitFifoPriority = ENABLE`.
+- [x] **Strict DLC=8:** CAN handler отбрасывает входящие `COMMAND` frames с `DLC != 8`.
+- [x] **Zero padding:** `ACK`, `NACK`, `DATA`, `DONE` формируются через `memset(&tx, 0, sizeof(tx))` и уходят с `DLC=8`.
+- [x] **Service constants:** добавлены `CAN_CMD_SRV_FACTORY_RESET` (`0xF006`) и `SRV_MAGIC_FACTORY_RESET` (`0xDEAD`).
+- [x] **Factory reset dispatch:** `task_dispatcher.c` использует именованные константы вместо магических чисел `0xF006` и `0xDEAD`.
+- [x] **Flash boundary:** `STM32F103C8TX_FLASH.ld` ограничен до `63K`, последняя страница `0x0800FC00` зарезервирована под `AppConfig`.
+- [x] **FreeRTOS heap:** `configTOTAL_HEAP_SIZE` увеличен до `8192`.
+- [x] **Queue creation checks:** в `main.c` добавлены проверки создания очередей и задач FreeRTOS с уходом в `Error_Handler()` при ошибке.
+- [x] **CAN TX helper:** добавлен `CAN_QueueTxFrame()`, флаг `FLAG_CAN_TX` ставится только после успешной постановки кадра в `can_tx_queueHandle`.
+- [x] **CAN RX ISR path:** `HAL_CAN_RxFifo0MsgPendingCallback()` ставит `FLAG_CAN_RX` только если фрейм помещен в `can_rx_queueHandle`.
+- [x] **Форматирование:** прикладной слой `App/*` и затронутые `Core USER CODE` блоки приведены к единому стилю. `Drivers/Middlewares` не форматировались, чтобы не создавать vendor/CubeMX churn.
+
+### 10.2. Проверка сборки
+
+- [x] `make -C Debug all -j4` проходит.
+- [x] Итоговый размер после последней CAN-правки:
+
+```text
+text=43044, data=256, bss=14448, total=57748
+```
+
+- [x] `git diff --check` чистый.
+
+### 10.3. Физический CAN smoke-test
+
+- [x] `F001 GET_DEVICE_INFO`:
+    - [x] Команда: `cansend can0 00201000#01F0000000000000`.
+    - [x] Факт: `ACK + 3 DATA + DONE`.
+    - [x] Содержимое INFO: `device_type=0x01`, `fw=1.0`, `channels=8`.
+- [x] `F004 GET_UID`:
+    - [x] Команда: `cansend can0 00201000#04F0000000000000`.
+    - [x] Факт: `ACK + 2 DATA + DONE`.
+    - [x] UID: `0C 22 07 14 52 16 30 30 30 30 30 32`.
+- [x] Unknown command:
+    - [x] Команда: `cansend can0 00201000#FFFF000000000000`.
+    - [x] Факт: `ACK + NACK(0x0001 Unknown Command)`.
+- [x] Invalid motor id:
+    - [x] Команда: `cansend can0 00201000#0101080000000000`.
+    - [x] Факт: `ACK + NACK(0x0002 Invalid Channel)`.
+- [x] Foreign destination:
+    - [x] Команда: `cansend can0 00211000#01F0000000000000`.
+    - [x] Факт: ответ отсутствует, кадр отброшен на transport-level.
+- [x] Short DLC:
+    - [x] Команда: `cansend can0 00201000#01F0`.
+    - [x] Факт: ответ отсутствует, кадр с `DLC != 8` отброшен на transport-level.
+- [x] Broadcast `F001 GET_DEVICE_INFO`:
+    - [x] Команда: `cansend can0 00001000#01F0000000000000`.
+    - [x] Факт: `ACK + 3 DATA + DONE` от Motion NodeID `0x20`.
+
+### 10.4. Сознательно не включено в текущий этап
+
+- [ ] `F007 GET_STATUS` и `CAN_STATUS_*` - отдельный этап статистики CAN-шины.
+- [ ] `CAN1_SCE_IRQHandler()` и `HAL_CAN_ErrorCallback()` - включать вместе с CAN diagnostics.
+- [ ] Watchdog/fault indication для сервисного инженера.
+- [ ] Полная проверка `F002 REBOOT`, `F003 FLASH_COMMIT`, `F005 SET_NODE_ID`, `F006 FACTORY_RESET`.
+- [ ] Реальный тест движения с нагрузкой и `DONE` по фактическому завершению шага.
+
+### 10.5. Следующие тесты без нагрузок
+
+- [x] CAN Level A / acceptance без нагрузок: `F001`, `F004`, unknown command, invalid motor id, foreign destination, short DLC, broadcast discovery.
+- [x] Перейти к доменным командам Motion без подключенных нагрузок.
+- [x] Проверить безопасную реакцию `STOP` для валидного канала:
+    - [x] `STOP motor 0`: `ACK + DONE`.
+    - [x] `STOP motor 7`: `ACK + DONE`.
+- [x] Проверить `HOME motor 0` без движения:
+    - [x] Команда: `cansend can0 00201000#020100C800000000`.
+    - [x] Факт: `ACK + DONE`.
+- [x] Проверить `START_CONTINUOUS speed=0`:
+    - [x] Команда: `cansend can0 00201000#0301000000000000`.
+    - [x] Факт: `ACK + DONE`, PWM не стартует при неактивном моторе.
+- [x] Проверить `ROTATE` на минимальном количестве шагов без нагрузки:
+    - [x] Команда: `cansend can0 00201000#0101000100000032`.
+    - [x] Факт: `ACK`, автоматический `DONE` ожидаемо отсутствует.
+    - [x] Обязательная остановка: `cansend can0 00201000#0401000000000000`, факт `ACK + DONE`.
+- [x] Проверить `MOTOR_BUSY`:
+    - [x] Повторный `ROTATE` на активный канал вернул `ACK + NACK(0x0003 Motor Busy)`.
+    - [x] Последующий `STOP` вернул `ACK + DONE`.
+- [ ] Перед физическими тестами движения учитывать ограничение текущей реализации: для `ROTATE` нет автоматического подсчета шагов, остановки и `DONE` по фактическому завершению.
+
+---
+
+## 11. Этап: доведение Motion до DDS-240 industrial pattern (план на 23.04.2026)
+
+**Цель:** продолжить работу от проверенной точки 22.04.2026 без опоры на историю чата. Рабочий ориентир - `readme/DDS-240_eko_system/EXECUTOR_INDUSTRIALIZATION_PLAYBOOK.md`, `DDS-240_ECOSYSTEM_STANDARD.md`, `CONDUCTOR_INTEGRATION_GUIDE.md` раздел `8.9` и отчет `project_report.md` разделы `10.6..10.10`.
+
+Старые разделы плана выше считаются историческими, если они противоречат текущей реализации. Актуальная база - раздел `10` и этот раздел `11`.
+
+### 11.1. Текущая подтвержденная база
+
+- [x] Сборка проходит: `make -C Debug all -j4`.
+- [x] CAN transport: `1 Mbit/s`, 29-bit Extended ID, strict `DLC=8`, broadcast, foreign destination drop, TX FIFO priority.
+- [x] Сервисный smoke: `F001 GET_DEVICE_INFO`, `F004 GET_UID`.
+- [x] Negative/addressing tests: unknown command, invalid motor id, foreign destination, short DLC, broadcast discovery.
+- [x] Доменные команды без нагрузок: `STOP 0`, `STOP 7`, `HOME 0` без движения, `START_CONTINUOUS speed=0`, `ROTATE + STOP`, `MOTOR_BUSY`.
+- [x] Flash config page исключена из application area: `FLASH LENGTH = 63K`, config page `0x0800FC00..0x0800FFFF`.
+- [x] RTOS resource checks для очередей и задач добавлены; heap установлен `8192`.
+
+### 11.2. Открытые ограничения
+
+- [ ] `F007 GET_STATUS` и счетчики CAN diagnostics не реализованы.
+- [ ] `CAN1_SCE_IRQHandler()` и `HAL_CAN_ErrorCallback()` не включены в рабочий diagnostic path.
+- [ ] `F002 REBOOT`, `F003 COMMIT`, `F005 SET_NODE_ID`, `F006 FACTORY_RESET` реализованы частично/в коде, но не закрыты стендовыми тестами на Motion.
+- [ ] Motion safe-state hook не выделен как самостоятельный безRTOSный путь для `Error_Handler()` и fault handlers.
+- [ ] IWDG supervisor отсутствует.
+- [ ] `ROTATE/HOME` не имеют автоматического подсчета шагов, остановки и `DONE` по фактическому завершению.
+- [ ] Физические тесты с драйвером/мотором не начинались.
+
+### 11.3. Рекомендуемый порядок работ
+
+#### A. `F007 GET_STATUS` и CAN diagnostics
+
+- [ ] Синхронизировать `App/inc/can_protocol.h` с общим набором DDS-240:
+    - [ ] `CAN_CMD_SRV_GET_STATUS = 0xF007`.
+    - [ ] `CAN_STATUS_*` metric_id `0x0001..0x0012`.
+    - [ ] при необходимости добавить общий `CAN_ERR_INVALID_PARAM = 0x0006`, не ломая уже проверенные коды.
+- [ ] Добавить структуру диагностических счетчиков CAN:
+    - [ ] RX accepted.
+    - [ ] TX submitted to HAL.
+    - [ ] RX queue overflow.
+    - [ ] TX queue overflow.
+    - [ ] Dispatcher queue overflow.
+    - [ ] dropped not Extended ID.
+    - [ ] dropped wrong destination.
+    - [ ] dropped wrong message type.
+    - [ ] dropped wrong DLC.
+    - [ ] TX mailbox timeout.
+    - [ ] TX HAL error.
+    - [ ] CAN error callback count.
+    - [ ] error warning/passive/bus-off counters.
+    - [ ] last HAL error.
+    - [ ] last ESR snapshot.
+    - [ ] domain/application queue overflow.
+- [ ] Инкрементировать счетчики строго в местах фактического события:
+    - [ ] transport drops - в `task_can_handler.c`.
+    - [ ] RX ISR queue overflow - в `stm32f1xx_it.c`.
+    - [ ] dispatcher queue overflow - при `osMessageQueuePut(dispatcher_queueHandle, ...) != osOK`.
+    - [ ] motion queue overflow - при `osMessageQueuePut(motion_queueHandle, ...) != osOK`.
+    - [ ] TX mailbox/HAL errors - в TX path CAN handler.
+- [ ] Добавить snapshot API, чтобы Dispatcher мог безопасно читать счетчики без прямого доступа к внутренним static-данным CAN handler.
+- [ ] Реализовать `GET_STATUS`: `ACK -> DATA metric 0x0001..0x0012 -> DONE`.
+- [ ] Проверить на стенде:
+    - [ ] `cansend can0 00201000#07F0000000000000`.
+    - [ ] порядок `ACK -> DATA... -> DONE`.
+    - [ ] рост счетчиков после short DLC, foreign dst, unknown command и invalid motor id.
+
+#### B. Проверка сервисного слоя `F002/F003/F005/F006`
+
+- [ ] `REBOOT` с неверным ключом: ожидать `ACK + NACK 0x0004`.
+- [ ] `REBOOT` с ключом `0x55AA`: ожидать `ACK + DONE`, reset, затем повторный `F001`.
+- [ ] `COMMIT`: ожидать `ACK + DONE`; после него проверить, что плата продолжает отвечать.
+- [ ] `SET_NODE_ID` RAM transition: проверить смену `0x20 -> 0x21 -> 0x20` без `COMMIT`.
+- [ ] `SET_NODE_ID + COMMIT + REBOOT`: проверить сохранение адреса после reset.
+- [ ] `FACTORY_RESET` с ключом `0xDEAD`: проверить возврат default `0x20`.
+- [ ] Зафиксировать в `project_report.md` фактические ID, команды и результат.
+
+#### C. Motion safe-state hook
+
+- [ ] Выделить безRTOSную функцию безопасного состояния, например `MotionDriver_AllSafe()`:
+    - [ ] остановить PWM/STEP на всех каналах;
+    - [ ] disable всех драйверов;
+    - [ ] не использовать CAN, queue, mutex, dynamic memory, длительные задержки.
+- [ ] Вызывать safe-state:
+    - [ ] при старте после инициализации GPIO/таймеров;
+    - [ ] в `Error_Handler()`;
+    - [ ] в fault handlers до аварийного цикла.
+- [ ] Сохранить `MotionDriver_Init()` как штатную инициализацию, но не смешивать ее с fault-safe path, если там есть потенциально небезопасные зависимости.
+- [ ] Проверить регрессию CAN и доменных команд без нагрузок после внедрения.
+
+#### D. IWDG supervisor
+
+- [ ] Включить IWDG в CubeMX только после safe-state hook.
+- [ ] Добавить `app_watchdog.h/c` и `task_watchdog`.
+- [ ] Клиенты heartbeat: CAN handler, Dispatcher, MotionController, TMC manager.
+- [ ] Перевести ожидания критических задач с бесконечных блокировок на finite timeout, чтобы они могли публиковать heartbeat.
+- [ ] Единственное место `HAL_IWDG_Refresh()` - supervisor task.
+- [ ] Проверить:
+    - [ ] idle без ложного reset;
+    - [ ] fault-injection зависания задачи;
+    - [ ] safe-state перед reset;
+    - [ ] восстановление связи через `F001`.
+
+#### E. Архитектура завершения движения `ROTATE/HOME`
+
+- [ ] Не начинать как мелкую правку. Сначала принять архитектурное решение.
+- [ ] Зафиксировать выбранный режим:
+    - [ ] оставить текущий PWM как `START_CONTINUOUS`, а `ROTATE/HOME` реализовать отдельным счетчиком шагов;
+    - [ ] или перейти на DDA/TIM3 для независимого управления каналами;
+    - [ ] или ввести другой проверяемый механизм генерации ограниченного числа STEP.
+- [ ] После решения реализовать:
+    - [ ] подсчет шагов;
+    - [ ] автоматическую остановку;
+    - [ ] `DONE` только после фактического завершения;
+    - [ ] корректный `STOP` в любой момент;
+    - [ ] `MOTOR_BUSY` для конфликтующих команд.
+- [ ] Только после этого переходить к полноценным физическим тестам движения.
+
+### 11.4. Что не делать первым
+
+- [ ] Не начинать с физической нагрузки до safe-state и понятной политики остановки.
+- [ ] Не добавлять watchdog до safe-state hook.
+- [ ] Не переделывать `ROTATE/HOME` без решения по генерации STEP и `DONE`.
+- [ ] Не подключать `dds240_global_config.h` напрямую в проект механически; сначала выполнить diff-аудит и переносить только общие значения.
+- [ ] Не считать старые разделы плана выше текущим чеклистом без сверки с разделами `10` и `11`.

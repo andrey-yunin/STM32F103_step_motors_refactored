@@ -11,7 +11,6 @@
 #include <stdint.h> // Для void* argument
 
 // Основная функция-обработчик для задачи TaskMotionController
-
 void app_start_task_motion_controller(void *argument);
 
 #endif /* TASK_MOTION_CONTROLLER_H_ */

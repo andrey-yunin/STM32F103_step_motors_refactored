@@ -54,9 +54,11 @@
 #define CAN_CMD_SRV_FLASH_COMMIT        0xF003  // Сохранить настройки в Flash
 #define CAN_CMD_SRV_GET_UID             0xF004  // Получить Unique ID (3 пакета)
 #define CAN_CMD_SRV_SET_NODE_ID         0xF005  // Установить новый CAN NodeID
+#define CAN_CMD_SRV_FACTORY_RESET       0xF006  // Сброс к заводским настройкам
 
 // Магический ключ для опасных операций
 #define SRV_MAGIC_REBOOT                0x55AA  // Ключ для перезагрузки
+#define SRV_MAGIC_FACTORY_RESET         0xDEAD  // Ключ для Factory Reset
 
 // ============================================================
 // Макрос построения 29-bit Extended CAN ID

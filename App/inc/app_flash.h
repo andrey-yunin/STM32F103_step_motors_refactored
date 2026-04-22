@@ -8,9 +8,9 @@
 #ifndef APP_FLASH_H_
 #define APP_FLASH_H_
 
-
 #include <stdint.h>
 #include <stdbool.h>
+
 #include "app_config.h"
 
 // Адрес последней страницы Flash (Page 63 для 64KB STM32F103)
@@ -21,15 +21,14 @@
  * @brief Структура конфигурации устройства, хранимая во Flash.
  * Размер кратен 4 байтам для выравнивания во Flash.
  */
- typedef struct {
-	 uint32_t magic;             // Метка инициализации памяти
-     uint8_t  performer_id;      // Настраиваемый CAN NodeID платы (0x20)
-     uint8_t  motor_map[8];      // Таблица маппинга: [Idx] -> Logical ID
-     uint8_t  reserved_bytes[3]; // Выравнивание до 4 байт
-     uint16_t reserved;          // Резерв для выравнивания
-     uint16_t checksum;          // Контрольная сумма структуры
+typedef struct {
+    uint32_t magic;             // Метка инициализации памяти
+    uint8_t  performer_id;      // Настраиваемый CAN NodeID платы (0x20)
+    uint8_t  motor_map[8];      // Таблица маппинга: [Idx] -> Logical ID
+    uint8_t  reserved_bytes[3]; // Выравнивание до 4 байт
+    uint16_t reserved;          // Резерв для выравнивания
+    uint16_t checksum;          // Контрольная сумма структуры
 } AppConfig_t;
-
 
 /**
  * @brief Чтение 96-битного уникального идентификатора чипа (MCU UID).
@@ -70,7 +69,5 @@ void AppConfig_SetPerformerID(uint32_t id);
  * @brief Сохранение всех изменений из RAM во Flash.
  */
 bool AppConfig_Commit(void);
-
-
 
 #endif /* APP_FLASH_H_ */

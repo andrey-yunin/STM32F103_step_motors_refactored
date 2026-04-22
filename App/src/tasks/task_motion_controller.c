@@ -23,6 +23,7 @@
 #include "motion_driver.h"
 #include "command_protocol.h"
 #include "can_protocol.h"
+
 #include <string.h>
 
 // --- Инкапсулированные данные (скрыты от других модулей) ---
@@ -31,120 +32,124 @@ static volatile bool g_motor_active[MOTOR_COUNT] = {false};
 
 // --- Публичный API доступа к состоянию (Thread-safe) ---
 
-bool MotionController_IsMotorActive(uint8_t motor_id) {
-    if (motor_id >= MOTOR_COUNT) return false;
+bool MotionController_IsMotorActive(uint8_t motor_id)
+{
+    if (motor_id >= MOTOR_COUNT) {
+        return false;
+    }
+
     return g_motor_active[motor_id];
 }
 
-void MotionController_SetMotorActive(uint8_t motor_id, bool active) {
-    if (motor_id >= MOTOR_COUNT) return;
+void MotionController_SetMotorActive(uint8_t motor_id, bool active)
+{
+    if (motor_id >= MOTOR_COUNT) {
+        return;
+    }
+
     g_motor_active[motor_id] = active;
 }
 
-void MotionController_GetMotorState(uint8_t motor_id, MotorMotionState_t *out_state) {
-    if (motor_id >= MOTOR_COUNT || out_state == NULL) return;
+void MotionController_GetMotorState(uint8_t motor_id, MotorMotionState_t *out_state)
+{
+    if (motor_id >= MOTOR_COUNT || out_state == NULL) {
+        return;
+    }
+
     memcpy(out_state, &motor_states[motor_id], sizeof(MotorMotionState_t));
 }
 
 void app_start_task_motion_controller(void *argument)
 {
-	MotionCommand_t received_motion_cmd;
-	// --- Инициализация состояний моторов и драйвера ---
+    MotionCommand_t received_motion_cmd;
 
-	for (uint8_t i = 0; i < MOTOR_COUNT; i++) {
-		MotionPlanner_InitMotorState(&motor_states[i], 0);
-        }
+    // --- Инициализация состояний моторов и драйвера ---
+    for (uint8_t i = 0; i < MOTOR_COUNT; i++) {
+        MotionPlanner_InitMotorState(&motor_states[i], 0);
+    }
 
-	MotionDriver_Init();
+    MotionDriver_Init();
 
-	// --- Основной цикл ---
-	for (;;)
-		{
-		if (osMessageQueueGet(motion_queueHandle, &received_motion_cmd, NULL, osWaitForever) == osOK)
-			{
-			uint8_t motor_id = received_motion_cmd.motor_id;
-			uint16_t cmd_code = received_motion_cmd.cmd_code;
+    // --- Основной цикл ---
+    for (;;) {
+        if (osMessageQueueGet(motion_queueHandle, &received_motion_cmd, NULL, osWaitForever) == osOK) {
+            uint8_t motor_id = received_motion_cmd.motor_id;
+            uint16_t cmd_code = received_motion_cmd.cmd_code;
             uint8_t device_id = received_motion_cmd.device_id;
 
             // --- Валидация motor_id ---
             if (motor_id >= MOTOR_COUNT) {
-            	CAN_SendNackPublic(cmd_code, CAN_ERR_INVALID_MOTOR_ID);
-            	continue;
-            	}
+                CAN_SendNackPublic(cmd_code, CAN_ERR_INVALID_MOTOR_ID);
+                continue;
+            }
 
             // --- Проверка занятости мотора ---
             // CMD_STOP разрешён даже если мотор занят
             if (received_motion_cmd.command_id != CMD_STOP && g_motor_active[motor_id]) {
-                                CAN_SendNackPublic(cmd_code, CAN_ERR_MOTOR_BUSY);
-                                continue;
-                        }
+                CAN_SendNackPublic(cmd_code, CAN_ERR_MOTOR_BUSY);
+                continue;
+            }
 
-                        // --- Обработка команды ---
-                        switch (received_motion_cmd.command_id)
-                        {
-                                case CMD_MOVE_ABSOLUTE:
-                                case CMD_MOVE_RELATIVE:
-                                {
-                                        int32_t target_pos;
-                                        if (received_motion_cmd.command_id == CMD_MOVE_ABSOLUTE) {
-                                                target_pos = (int32_t)received_motion_cmd.steps;
-                                        } else {
-                                                target_pos = motor_states[motor_id].current_position +
-                                                                (received_motion_cmd.direction ? (int32_t)received_motion_cmd.steps
-                                                                                                       : -(int32_t)received_motion_cmd.steps);
-                                        }
-
-                                        int32_t steps_to_go = MotionPlanner_CalculateNewTarget(&motor_states[motor_id], target_pos);
-                                        if (steps_to_go == 0) {
-                                                // Движение не требуется — сразу DONE
-                                                CAN_SendDone(cmd_code, device_id);
-                                                continue;
-                                        }
-
-                                        MotionDriver_SetDirection(motor_id, (motor_states[motor_id].direction == 1));
-                                        g_motor_active[motor_id] = true;
-                                        MotionDriver_StartMotor(motor_id, motor_states[motor_id].max_speed_steps_per_sec);
-
-                                        // TODO: Механизм подсчёта шагов и автоматической остановки + DONE
-                                        // будет реализован при интеграции с прерыванием таймера.
-                                        // Пока DONE не отправляется автоматически по завершении движения.
-                                        break;
-                                }
-
-                                case CMD_STOP:
-                                {
-                                        MotionDriver_StopMotor(motor_id);
-                                        g_motor_active[motor_id] = false;
-                                        motor_states[motor_id].steps_to_go = 0;
-                                        motor_states[motor_id].current_speed_steps_per_sec = 0;
-
-                                        CAN_SendDone(cmd_code, device_id);
-                                        break;
-                                }
-
-                                case CMD_SET_SPEED:
-                                {
-                                        motor_states[motor_id].max_speed_steps_per_sec = received_motion_cmd.speed_steps_per_sec;
-                                        if (g_motor_active[motor_id]) {
-                                                MotionDriver_StartMotor(motor_id, motor_states[motor_id].max_speed_steps_per_sec);
-                                        }
-
-                                        CAN_SendDone(cmd_code, device_id);
-                                        break;
-                                }
-
-                                case CMD_SET_ACCELERATION:
-                                {
-                                        motor_states[motor_id].acceleration_steps_per_sec2 = received_motion_cmd.acceleration_steps_per_sec2;
-
-                                        CAN_SendDone(cmd_code, device_id);
-                                        break;
-                                }
-
-                                default:
-                                        break;
-                        }
+            // --- Обработка команды ---
+            switch (received_motion_cmd.command_id) {
+            case CMD_MOVE_ABSOLUTE:
+            case CMD_MOVE_RELATIVE: {
+                int32_t target_pos;
+                if (received_motion_cmd.command_id == CMD_MOVE_ABSOLUTE) {
+                    target_pos = (int32_t)received_motion_cmd.steps;
+                } else {
+                    target_pos = motor_states[motor_id].current_position +
+                                 (received_motion_cmd.direction ? (int32_t)received_motion_cmd.steps
+                                                                : -(int32_t)received_motion_cmd.steps);
                 }
-        }
-  }
 
+                int32_t steps_to_go = MotionPlanner_CalculateNewTarget(&motor_states[motor_id], target_pos);
+                if (steps_to_go == 0) {
+                    // Движение не требуется — сразу DONE
+                    CAN_SendDone(cmd_code, device_id);
+                    continue;
+                }
+
+                MotionDriver_SetDirection(motor_id, (motor_states[motor_id].direction == 1));
+                g_motor_active[motor_id] = true;
+                MotionDriver_StartMotor(motor_id, motor_states[motor_id].max_speed_steps_per_sec);
+
+                // TODO: Механизм подсчёта шагов и автоматической остановки + DONE
+                // будет реализован при интеграции с прерыванием таймера.
+                // Пока DONE не отправляется автоматически по завершении движения.
+                break;
+            }
+
+            case CMD_STOP: {
+                MotionDriver_StopMotor(motor_id);
+                g_motor_active[motor_id] = false;
+                motor_states[motor_id].steps_to_go = 0;
+                motor_states[motor_id].current_speed_steps_per_sec = 0;
+
+                CAN_SendDone(cmd_code, device_id);
+                break;
+            }
+
+            case CMD_SET_SPEED: {
+                motor_states[motor_id].max_speed_steps_per_sec = received_motion_cmd.speed_steps_per_sec;
+                if (g_motor_active[motor_id]) {
+                    MotionDriver_StartMotor(motor_id, motor_states[motor_id].max_speed_steps_per_sec);
+                }
+
+                CAN_SendDone(cmd_code, device_id);
+                break;
+            }
+
+            case CMD_SET_ACCELERATION: {
+                motor_states[motor_id].acceleration_steps_per_sec2 = received_motion_cmd.acceleration_steps_per_sec2;
+
+                CAN_SendDone(cmd_code, device_id);
+                break;
+            }
+
+            default:
+                break;
+            }
+        }
+    }
+}

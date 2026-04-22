@@ -29,8 +29,6 @@
 #include "app_queues.h"
 #include "motion_driver.h"
 
-
-
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -229,32 +227,41 @@ void TIM4_IRQHandler(void)
 }
 
 /* USER CODE BEGIN 1 */
-// Callback-функция, вызываемая, когда в FIFO0 CAN1 появляется новое сообщение
+// Callback вызывается HAL, когда в CAN FIFO0 появился новый принятый фрейм.
+//
+// Важно:
+// - здесь ISR-контекст;
+// - прикладную логику здесь не выполняем;
+// - быстро забираем фрейм из аппаратного FIFO;
+// - CAN handler будим только если фрейм реально попал в RTOS-очередь;
+// - если очередь переполнена, фрейм теряется, дирижер увидит ACK timeout.
 void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
 {
-	CanRxFrame_t rx_frame;
-	// Извлекаем сообщение из аппаратного буфера CAN FIFO0
-	if (HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO0, &rx_frame.header, rx_frame.data) == HAL_OK)
-		{
-		// Помещаем весь фрейм в очередь can_rx_queue для обработки
-		osMessageQueuePut(can_rx_queueHandle, &rx_frame, 0, 0); // priority 0, timeout 0 (немедленно)
-		osThreadFlagsSet(task_can_handleHandle, FLAG_CAN_RX); // Уведомляем CAN Handler о новом фрейме
+  CanRxFrame_t rx_frame;
 
-		}
+  // Забираем один CAN-фрейм из аппаратного FIFO0.
+  if (HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO0, &rx_frame.header, rx_frame.data) == HAL_OK)
+  {
+    // Будим CAN-задачу только после успешной постановки в software queue.
+    if (osMessageQueuePut(can_rx_queueHandle, &rx_frame, 0, 0) == osOK)
+    {
+      osThreadFlagsSet(task_can_handleHandle, FLAG_CAN_RX);
+    }
+  }
 }
 
 // Callback функция для прерывания TIM2 Output Compare Channel 1
 void HAL_TIM_OC_DelayElapsedCallback(TIM_HandleTypeDef *htim)
 {
-	/* USER CODE BEGIN Callback 0 */
-	/* USER CODE END Callback 0 */
-	if (htim->Instance == TIM2) {
-		// Old software step generation logic for TIM2 Output Compare - REMOVED as part of refactoring.
-		// New hardware PWM generation will handle STEP pulses automatically.
-		// Any remaining logic here would be for non-PWM TIM2 interrupts.
-		}
-	/* USER CODE BEGIN HAL_TIM_OC_DelayElapsedCallback */
-	/* USER CODE END HAL_TIM_OC_DelayElapsedCallback */
+  /* USER CODE BEGIN Callback 0 */
+  /* USER CODE END Callback 0 */
+  if (htim->Instance == TIM2) {
+    // Old software step generation logic for TIM2 Output Compare - REMOVED as part of refactoring.
+    // New hardware PWM generation will handle STEP pulses automatically.
+    // Any remaining logic here would be for non-PWM TIM2 interrupts.
+  }
+  /* USER CODE BEGIN HAL_TIM_OC_DelayElapsedCallback */
+  /* USER CODE END HAL_TIM_OC_DelayElapsedCallback */
 }
 
 /* USER CODE END 1 */

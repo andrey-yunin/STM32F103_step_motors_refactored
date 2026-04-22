@@ -1,0 +1,152 @@
+Configuration	STM32F103_step_motors_refactored
+STM32CubeMX 	6.15.0
+Date	04/20/2026
+MCU	STM32F103C8Tx
+
+
+
+PERIPHERALS	MODES	FUNCTIONS	PINS
+CAN	Activated	CAN_RX	PB8
+CAN	Activated	CAN_TX	PB9
+RTC	Activate Clock Source	RTC_VS_RTC_Activate	VP_RTC_VS_RTC_Activate
+RTC	No RTC Output	RTC_No_RTC_Output	VP_RTC_No_RTC_Output
+SYS	Serial Wire	SYS_JTCK-SWCLK	PA14
+SYS	Serial Wire	SYS_JTMS-SWDIO	PA13
+SYS	TIM4	SYS_VS_tim4	VP_SYS_VS_tim4
+TIM1	Internal Clock	TIM1_VS_ClockSourceINT	VP_TIM1_VS_ClockSourceINT
+TIM1	PWM Generation CH1	TIM1_CH1	PA8
+TIM1	PWM Generation CH2	TIM1_CH2	PA9
+TIM1	PWM Generation CH3	TIM1_CH3	PA10
+TIM1	PWM Generation CH4	TIM1_CH4	PA11
+TIM2	Internal Clock	TIM2_VS_ClockSourceINT	VP_TIM2_VS_ClockSourceINT
+TIM2	PWM Generation CH1	TIM2_CH1	PA0-WKUP
+TIM2	PWM Generation CH2	TIM2_CH2	PA1
+TIM2	PWM Generation CH3	TIM2_CH3	PB10
+TIM2	PWM Generation CH4	TIM2_CH4	PB11
+USART1	Asynchronous	USART1_RX	PB7
+USART1	Asynchronous	USART1_TX	PB6
+USART2	Asynchronous	USART2_RX	PA3
+USART2	Asynchronous	USART2_TX	PA2
+
+
+
+Pin Nb	PINs	FUNCTIONs	LABELs
+2	PC13-TAMPER-RTC	GPIO_Output	GPIO
+10	PA0-WKUP	TIM2_CH1	
+11	PA1	TIM2_CH2	
+12	PA2	USART2_TX	
+13	PA3	USART2_RX	
+14	PA4	GPIO_Output	EN_1
+15	PA5	GPIO_Output	EN_2
+16	PA6	GPIO_Output	EN_3
+17	PA7	GPIO_Output	EN_4
+18	PB0	GPIO_Output	DIR_1
+19	PB1	GPIO_Output	DIR_2
+20	PB2	GPIO_Output	DIR_3
+21	PB10	TIM2_CH3	
+22	PB11	TIM2_CH4	
+25	PB12	GPIO_Output	DIR_7
+26	PB13	GPIO_Output	DIR_8
+27	PB14	GPIO_Output	EN_7
+28	PB15	GPIO_Output	EN_8
+29	PA8	TIM1_CH1	
+30	PA9	TIM1_CH2	
+31	PA10	TIM1_CH3	
+32	PA11	TIM1_CH4	
+33	PA12	GPIO_Output	EN_5
+34	PA13	SYS_JTMS-SWDIO	
+37	PA14	SYS_JTCK-SWCLK	
+38	PA15	GPIO_Output	EN_6
+39	PB3	GPIO_Output	DIR_4
+40	PB4	GPIO_Output	DIR_5
+41	PB5	GPIO_Output	DIR_6
+42	PB6	USART1_TX	
+43	PB7	USART1_RX	
+45	PB8	CAN_RX	
+46	PB9	CAN_TX	
+PERIPHERALS	MODES	FUNCTIONS	PINS
+CAN	Activated	CAN_RX	PB8
+CAN	Activated	CAN_TX	PB9
+RTC	Activate Clock Source	RTC_VS_RTC_Activate	VP_RTC_VS_RTC_Activate
+RTC	No RTC Output	RTC_No_RTC_Output	VP_RTC_No_RTC_Output
+SYS	Serial Wire	SYS_JTCK-SWCLK	PA14
+SYS	Serial Wire	SYS_JTMS-SWDIO	PA13
+SYS	TIM4	SYS_VS_tim4	VP_SYS_VS_tim4
+TIM1	Internal Clock	TIM1_VS_ClockSourceINT	VP_TIM1_VS_ClockSourceINT
+TIM1	PWM Generation CH1	TIM1_CH1	PA8
+TIM1	PWM Generation CH2	TIM1_CH2	PA9
+TIM1	PWM Generation CH3	TIM1_CH3	PA10
+TIM1	PWM Generation CH4	TIM1_CH4	PA11
+TIM2	Internal Clock	TIM2_VS_ClockSourceINT	VP_TIM2_VS_ClockSourceINT
+TIM2	PWM Generation CH1	TIM2_CH1	PA0-WKUP
+TIM2	PWM Generation CH2	TIM2_CH2	PA1
+TIM2	PWM Generation CH3	TIM2_CH3	PB10
+TIM2	PWM Generation CH4	TIM2_CH4	PB11
+USART1	Asynchronous	USART1_RX	PB7
+USART1	Asynchronous	USART1_TX	PB6
+USART2	Asynchronous	USART2_RX	PA3
+USART2	Asynchronous	USART2_TX	PA2
+
+
+
+Pin Nb	PINs	FUNCTIONs	LABELs
+2	PC13-TAMPER-RTC	GPIO_Output	GPIO
+10	PA0-WKUP	TIM2_CH1	
+11	PA1	TIM2_CH2	
+12	PA2	USART2_TX	
+13	PA3	USART2_RX	
+14	PA4	GPIO_Output	EN_1
+15	PA5	GPIO_Output	EN_2
+16	PA6	GPIO_Output	EN_3
+17	PA7	GPIO_Output	EN_4
+18	PB0	GPIO_Output	DIR_1
+19	PB1	GPIO_Output	DIR_2
+20	PB2	GPIO_Output	DIR_3
+21	PB10	TIM2_CH3	
+22	PB11	TIM2_CH4	
+25	PB12	GPIO_Output	DIR_7
+26	PB13	GPIO_Output	DIR_8
+27	PB14	GPIO_Output	EN_7
+28	PB15	GPIO_Output	EN_8
+29	PA8	TIM1_CH1	
+30	PA9	TIM1_CH2	
+31	PA10	TIM1_CH3	
+32	PA11	TIM1_CH4	
+33	PA12	GPIO_Output	EN_5
+34	PA13	SYS_JTMS-SWDIO	
+37	PA14	SYS_JTCK-SWCLK	
+38	PA15	GPIO_Output	EN_6
+39	PB3	GPIO_Output	DIR_4
+40	PB4	GPIO_Output	DIR_5
+41	PB5	GPIO_Output	DIR_6
+42	PB6	USART1_TX	
+43	PB7	USART1_RX	
+45	PB8	CAN_RX	
+46	PB9	CAN_TX	
+
+
+
+SOFTWARE PROJECT
+
+Project Settings : 
+Project Name : STM32F103_step_motors_refactored
+Project Folder : /home/andrey/STM32CubeIDE/workspace_1.19.0/STM32F103_step_motors_refactored
+Toolchain / IDE : STM32CubeIDE
+Firmware Package Name and Version : STM32Cube FW_F1 V1.8.6
+
+
+Code Generation Settings : 
+STM32Cube MCU packages and embedded software packs : Copy only the necessary library files
+Generate peripheral initialization as a pair of '.c/.h' files per peripheral : No
+Backup previously generated files when re-generating : No
+Delete previously generated files when not re-generated : Yes
+Set all free pins as analog (to optimize the power consumption) : No
+
+
+Toolchains Settings : 
+Compiler Optimizations : 
+
+
+
+
+
