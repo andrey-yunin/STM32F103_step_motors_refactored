@@ -28,6 +28,7 @@
 #include "app_config.h"
 #include "app_queues.h"
 #include "motion_driver.h"
+#include "task_can_handler.h"
 
 /* USER CODE END Includes */
 
@@ -49,6 +50,7 @@
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN PV */
 
+extern TIM_HandleTypeDef htim1;
 extern TIM_HandleTypeDef htim2;
 
 /* USER CODE END PV */
@@ -60,6 +62,17 @@ extern TIM_HandleTypeDef htim2;
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+static void EnterSafeFaultState(void)
+{
+  /*
+   * Fault handlers must not depend on FreeRTOS, CAN queues or dynamic memory.
+   * Stop interrupts first, then force all motion outputs to the domain safe state.
+   */
+  __disable_irq();
+  MotionDriver_AllSafe();
+  __DSB();
+  __ISB();
+}
 
 /* USER CODE END 0 */
 
@@ -81,6 +94,7 @@ extern TIM_HandleTypeDef htim4;
 void NMI_Handler(void)
 {
   /* USER CODE BEGIN NonMaskableInt_IRQn 0 */
+  EnterSafeFaultState();
 
   /* USER CODE END NonMaskableInt_IRQn 0 */
   /* USER CODE BEGIN NonMaskableInt_IRQn 1 */
@@ -96,6 +110,7 @@ void NMI_Handler(void)
 void HardFault_Handler(void)
 {
   /* USER CODE BEGIN HardFault_IRQn 0 */
+  EnterSafeFaultState();
 
   /* USER CODE END HardFault_IRQn 0 */
   while (1)
@@ -111,6 +126,7 @@ void HardFault_Handler(void)
 void MemManage_Handler(void)
 {
   /* USER CODE BEGIN MemoryManagement_IRQn 0 */
+  EnterSafeFaultState();
 
   /* USER CODE END MemoryManagement_IRQn 0 */
   while (1)
@@ -126,6 +142,7 @@ void MemManage_Handler(void)
 void BusFault_Handler(void)
 {
   /* USER CODE BEGIN BusFault_IRQn 0 */
+  EnterSafeFaultState();
 
   /* USER CODE END BusFault_IRQn 0 */
   while (1)
@@ -141,6 +158,7 @@ void BusFault_Handler(void)
 void UsageFault_Handler(void)
 {
   /* USER CODE BEGIN UsageFault_IRQn 0 */
+  EnterSafeFaultState();
 
   /* USER CODE END UsageFault_IRQn 0 */
   while (1)
@@ -199,6 +217,20 @@ void CAN1_RX1_IRQHandler(void)
 }
 
 /**
+  * @brief This function handles TIM1 capture compare interrupt.
+  */
+void TIM1_CC_IRQHandler(void)
+{
+  /* USER CODE BEGIN TIM1_CC_IRQn 0 */
+
+  /* USER CODE END TIM1_CC_IRQn 0 */
+  HAL_TIM_IRQHandler(&htim1);
+  /* USER CODE BEGIN TIM1_CC_IRQn 1 */
+
+  /* USER CODE END TIM1_CC_IRQn 1 */
+}
+
+/**
   * @brief This function handles TIM2 global interrupt.
   */
 void TIM2_IRQHandler(void)
@@ -247,7 +279,18 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
     {
       osThreadFlagsSet(task_can_handleHandle, FLAG_CAN_RX);
     }
+    else
+    {
+      CAN_Diagnostics_RecordRxQueueOverflow();
+    }
   }
+}
+
+// Callback вызывается HAL при CAN error/status событиях.
+// Здесь только фиксируем состояние для последующего GET_STATUS.
+void HAL_CAN_ErrorCallback(CAN_HandleTypeDef *hcan)
+{
+  CAN_Diagnostics_RecordCanError(HAL_CAN_GetError(hcan), hcan->Instance->ESR);
 }
 
 // Callback функция для прерывания TIM2 Output Compare Channel 1

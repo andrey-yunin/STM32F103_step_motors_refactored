@@ -51,6 +51,104 @@ static uint32_t MotorStepTimChannels[MOTOR_COUNT] = {
     TIM_CHANNEL_1, TIM_CHANNEL_2, TIM_CHANNEL_3, TIM_CHANNEL_4
 };
 
+static volatile bool s_finite_active[MOTOR_COUNT];
+static volatile uint32_t s_remaining_steps[MOTOR_COUNT];
+static volatile uint32_t s_completed_motor_mask;
+
+static void MotionDriver_DisableTimerOutputs(TIM_TypeDef *tim, bool has_main_output_enable)
+{
+    tim->CCER &= (uint16_t)~(TIM_CCER_CC1E | TIM_CCER_CC2E | TIM_CCER_CC3E | TIM_CCER_CC4E);
+    tim->CR1 &= (uint16_t)~TIM_CR1_CEN;
+
+    if (has_main_output_enable) {
+        tim->BDTR &= (uint16_t)~TIM_BDTR_MOE;
+    }
+}
+
+static uint8_t MotionDriver_FindMotorByTimerAndActiveChannel(TIM_HandleTypeDef *htim)
+{
+    uint32_t channel;
+
+    if (htim == NULL) {
+        return MOTOR_ID_INVALID;
+    }
+
+    switch (htim->Channel) {
+    case HAL_TIM_ACTIVE_CHANNEL_1:
+        channel = TIM_CHANNEL_1;
+        break;
+    case HAL_TIM_ACTIVE_CHANNEL_2:
+        channel = TIM_CHANNEL_2;
+        break;
+    case HAL_TIM_ACTIVE_CHANNEL_3:
+        channel = TIM_CHANNEL_3;
+        break;
+    case HAL_TIM_ACTIVE_CHANNEL_4:
+        channel = TIM_CHANNEL_4;
+        break;
+    default:
+        return MOTOR_ID_INVALID;
+    }
+
+    for (uint8_t i = 0; i < MOTOR_COUNT; i++) {
+        if (MotorStepTimHandles[i]->Instance == htim->Instance &&
+            MotorStepTimChannels[i] == channel) {
+            return i;
+        }
+    }
+
+    return MOTOR_ID_INVALID;
+}
+
+static bool MotionDriver_ConfigurePwm(uint8_t motor_id, uint32_t frequency)
+{
+    if (motor_id >= MOTOR_COUNT || frequency == 0U) {
+        return false;
+    }
+
+    TIM_HandleTypeDef* htim = MotorStepTimHandles[motor_id];
+    uint32_t channel = MotorStepTimChannels[motor_id];
+    uint32_t timerClock = 64000000U;
+    uint32_t calculatedARR = 0U;
+    uint32_t currentPrescaler;
+
+    // Подбираем PSC/ARR под requested STEP frequency и 16-bit ARR.
+    for (currentPrescaler = 1U; currentPrescaler <= 65536U; currentPrescaler++) {
+        calculatedARR = (timerClock / currentPrescaler / frequency) - 1U;
+        if (calculatedARR > 0U && calculatedARR <= 65535U) {
+            break;
+        }
+    }
+
+    if (currentPrescaler > 65536U || calculatedARR == 0U) {
+        return false;
+    }
+
+    htim->Instance->PSC = currentPrescaler - 1U;
+    htim->Instance->ARR = calculatedARR;
+    __HAL_TIM_SET_COMPARE(htim, channel, (calculatedARR + 1U) / 2U);
+
+    // Немедленно загружаем новые PSC/ARR перед стартом PWM.
+    htim->Instance->EGR = TIM_EGR_UG;
+
+    return true;
+}
+
+static void MotionDriver_StopPwmChannel(uint8_t motor_id, bool finite_mode)
+{
+    TIM_HandleTypeDef* htim = MotorStepTimHandles[motor_id];
+    uint32_t channel = MotorStepTimChannels[motor_id];
+
+    if (finite_mode) {
+        (void)HAL_TIM_PWM_Stop_IT(htim, channel);
+    } else {
+        (void)HAL_TIM_PWM_Stop(htim, channel);
+    }
+
+    // EN active low: переводим драйвер в idle/disabled после остановки STEP.
+    HAL_GPIO_WritePin(MotorEnPorts[motor_id], MotorEnPins[motor_id], GPIO_PIN_SET);
+}
+
 // --- Function Implementations ---
 
 /**
@@ -58,10 +156,29 @@ static uint32_t MotorStepTimChannels[MOTOR_COUNT] = {
  */
 void MotionDriver_Init(void)
 {
-    // Ensure all motors are disabled on startup
+    MotionDriver_AllSafe();
+}
+
+/**
+ * @brief Forces all motion outputs into a safe state without RTOS or CAN dependencies.
+ */
+void MotionDriver_AllSafe(void)
+{
+    __HAL_RCC_GPIOA_CLK_ENABLE();
+    __HAL_RCC_GPIOB_CLK_ENABLE();
+    __HAL_RCC_TIM1_CLK_ENABLE();
+    __HAL_RCC_TIM2_CLK_ENABLE();
+
+    MotionDriver_DisableTimerOutputs(TIM1, true);
+    MotionDriver_DisableTimerOutputs(TIM2, false);
+
     for (uint8_t i = 0; i < MOTOR_COUNT; i++) {
-        MotionDriver_StopMotor(i); // This will also disable the motor
+        s_finite_active[i] = false;
+        s_remaining_steps[i] = 0U;
+        HAL_GPIO_WritePin(MotorEnPorts[i], MotorEnPins[i], GPIO_PIN_SET);
     }
+
+    s_completed_motor_mask = 0U;
 }
 
 /**
@@ -95,44 +212,49 @@ void MotionDriver_StartMotor(uint8_t motor_id, uint32_t frequency)
         return;
     }
 
-    TIM_HandleTypeDef* htim = MotorStepTimHandles[motor_id];
-    uint32_t channel = MotorStepTimChannels[motor_id];
+    s_finite_active[motor_id] = false;
+    s_remaining_steps[motor_id] = 0U;
 
-    // Enable the motor (EN is active low)
-    HAL_GPIO_WritePin(MotorEnPorts[motor_id], MotorEnPins[motor_id], GPIO_PIN_RESET);
-
-    uint32_t timerClock = 64000000; // Assuming APB1/APB2 Timer clock is 64MHz (PCLK*2 for most cases)
-    uint32_t psc_reg = 0;
-    uint32_t calculatedARR = 0;
-    uint32_t currentPrescaler = 1; // (PSC+1)
-
-    // Dynamically adjust prescaler to get good frequency resolution and stay within 16-bit ARR
-    // Aim to keep ARR in a reasonable range, max 65535
-    for (currentPrescaler = 1; currentPrescaler <= 65536; currentPrescaler++) {
-        calculatedARR = (timerClock / currentPrescaler / frequency) - 1;
-        if (calculatedARR > 0 && calculatedARR <= 65535) { // Found suitable ARR and Prescaler
-            break;
-        }
-    }
-
-    if (currentPrescaler > 65536 || calculatedARR <= 0) {
-        // Could not find a suitable prescaler/ARR for the given frequency.
-        // This might happen for extremely low or high frequencies.
-        // Fallback to a default or error handling.
+    if (!MotionDriver_ConfigurePwm(motor_id, frequency)) {
         MotionDriver_StopMotor(motor_id);
         return;
     }
 
-    psc_reg = currentPrescaler - 1;
-    uint32_t pulse = (calculatedARR + 1) / 2; // 50% duty cycle
-
-    // Apply settings to the timer
-    htim->Instance->PSC = psc_reg;
-    htim->Instance->ARR = calculatedARR;
-    __HAL_TIM_SET_COMPARE(htim, channel, pulse);
-
-    // Start PWM generation
+    TIM_HandleTypeDef* htim = MotorStepTimHandles[motor_id];
+    uint32_t channel = MotorStepTimChannels[motor_id];
+    HAL_GPIO_WritePin(MotorEnPorts[motor_id], MotorEnPins[motor_id], GPIO_PIN_RESET);
     HAL_TIM_PWM_Start(htim, channel);
+}
+
+bool MotionDriver_StartFinite(uint8_t motor_id, uint32_t frequency, uint32_t steps)
+{
+    if (motor_id >= MOTOR_COUNT || frequency == 0U || steps == 0U) {
+        return false;
+    }
+
+    if (!MotionDriver_ConfigurePwm(motor_id, frequency)) {
+        MotionDriver_StopMotor(motor_id);
+        return false;
+    }
+
+    TIM_HandleTypeDef* htim = MotorStepTimHandles[motor_id];
+    uint32_t channel = MotorStepTimChannels[motor_id];
+
+    s_completed_motor_mask &= ~(1UL << motor_id);
+    s_remaining_steps[motor_id] = steps;
+    s_finite_active[motor_id] = true;
+
+    // EN active low: нагрузку включаем только после успешной настройки PWM.
+    HAL_GPIO_WritePin(MotorEnPorts[motor_id], MotorEnPins[motor_id], GPIO_PIN_RESET);
+
+    if (HAL_TIM_PWM_Start_IT(htim, channel) != HAL_OK) {
+        s_finite_active[motor_id] = false;
+        s_remaining_steps[motor_id] = 0U;
+        MotionDriver_StopMotor(motor_id);
+        return false;
+    }
+
+    return true;
 }
 
 /**
@@ -145,27 +267,57 @@ void MotionDriver_StopMotor(uint8_t motor_id)
         return;
     }
 
-    TIM_HandleTypeDef* htim = MotorStepTimHandles[motor_id];
-    uint32_t channel = MotorStepTimChannels[motor_id];
+    bool finite_mode = s_finite_active[motor_id];
+    s_finite_active[motor_id] = false;
+    s_remaining_steps[motor_id] = 0U;
+    s_completed_motor_mask &= ~(1UL << motor_id);
 
-    // Stop PWM generation
-    HAL_TIM_PWM_Stop(htim, channel);
-
-    // Disable the motor (EN is active high for disable)
-    HAL_GPIO_WritePin(MotorEnPorts[motor_id], MotorEnPins[motor_id], GPIO_PIN_SET);
+    MotionDriver_StopPwmChannel(motor_id, finite_mode);
 }
 
-/**
- * @brief Callback function for pulse generation completion (if used, e.g., in One-Pulse mode).
- *        For continuous PWM, this typically isn't used for step completion.
- * @param htim Pointer to TIM_HandleTypeDef structure.
- */
-void MotionDriver_PulseGenerationCompleted_Callback(TIM_HandleTypeDef *htim)
+bool MotionDriver_ConsumeCompletedMotor(uint8_t *motor_id)
 {
-    // This callback is usually triggered by HAL_TIM_PWM_PulseFinishedCallback or similar.
-    // For continuous PWM (as used for stepper STEP signals), this callback is not
-    // typically relevant for indicating 'completion' of a step sequence, as PWM runs continuously.
-    // It might be used if we were implementing a fixed number of pulses or one-pulse mode,
-    // but not for the continuous step generation required by MotionDriver_StartMotor.
-    // Keep it as a stub for now.
+    if (motor_id == NULL) {
+        return false;
+    }
+
+    __disable_irq();
+    uint32_t mask = s_completed_motor_mask;
+    if (mask == 0U) {
+        __enable_irq();
+        return false;
+    }
+
+    for (uint8_t i = 0; i < MOTOR_COUNT; i++) {
+        if ((mask & (1UL << i)) != 0U) {
+            s_completed_motor_mask &= ~(1UL << i);
+            __enable_irq();
+            *motor_id = i;
+            return true;
+        }
+    }
+
+    __enable_irq();
+    return false;
+}
+
+void HAL_TIM_PWM_PulseFinishedCallback(TIM_HandleTypeDef *htim)
+{
+    uint8_t motor_id = MotionDriver_FindMotorByTimerAndActiveChannel(htim);
+
+    if (motor_id >= MOTOR_COUNT || !s_finite_active[motor_id]) {
+        return;
+    }
+
+    if (s_remaining_steps[motor_id] > 0U) {
+        s_remaining_steps[motor_id]--;
+    }
+
+    if (s_remaining_steps[motor_id] == 0U) {
+        // ISR-контекст: только останавливаем STEP и ставим completion flag.
+        // CAN DONE отправит MotionController из task context.
+        s_finite_active[motor_id] = false;
+        MotionDriver_StopPwmChannel(motor_id, true);
+        s_completed_motor_mask |= (1UL << motor_id);
+    }
 }

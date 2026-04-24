@@ -11,6 +11,7 @@
 #include "tmc2209_driver.h" // Для TMC2209_Handle_t
 #include "app_config.h"     // Для MOTOR_COUNT
 #include "app_queues.h"
+#include "watchdog.h"
 
 // --- Инкапсулированные данные драйверов ---
 static TMC2209_Handle_t tmc_drivers[MOTOR_COUNT];
@@ -32,11 +33,14 @@ void app_start_task_tmc2209_manager(void *argument)
 {
     // Ждем небольшую паузу, чтобы все остальные части системы успели запуститься
     osDelay(100);
+    AppWatchdog_Heartbeat(APP_WDG_CLIENT_TMC);
 
     // --- Инициализация всех 8-ми драйверов ---
     // Моторы 0-3 на USART1 (slave_addr 0-3)
     // Моторы 4-7 на USART2 (slave_addr 0-3)
     for (uint8_t i = 0; i < MOTOR_COUNT; i++) {
+        AppWatchdog_Heartbeat(APP_WDG_CLIENT_TMC);
+
         UART_HandleTypeDef* huart_ptr = (i < 4) ? &huart1 : &huart2;
         uint8_t slave_addr = i % 4;
 
@@ -44,9 +48,11 @@ void app_start_task_tmc2209_manager(void *argument)
         TMC2209_SetMotorCurrent(&tmc_drivers[i], 70, 40); // 70% рабочий ток, 40% ток удержания
         TMC2209_SetMicrosteps(&tmc_drivers[i], 16);       // 16 микрошагов
     }
+    AppWatchdog_Heartbeat(APP_WDG_CLIENT_TMC);
 
     // Бесконечный цикл задачи
     for (;;) {
-        osDelay(1000);
+        AppWatchdog_Heartbeat(APP_WDG_CLIENT_TMC);
+        osDelay(APP_WATCHDOG_TASK_IDLE_TIMEOUT_MS);
     }
 }

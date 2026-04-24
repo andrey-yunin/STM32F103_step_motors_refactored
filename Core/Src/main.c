@@ -27,8 +27,10 @@
 #include "task_can_handler.h"
 #include "task_motion_controller.h"
 #include "task_tmc2209_manager.h"
+#include "watchdog.h"
 #include "app_config.h"
 #include "command_protocol.h"
+#include "motion_driver.h"
 #include "tmc2209_driver.h" // Для типа TMC2209_Handle_t
 
 
@@ -52,6 +54,8 @@
 
 /* Private variables ---------------------------------------------------------*/
 CAN_HandleTypeDef hcan;
+
+IWDG_HandleTypeDef hiwdg;
 
 RTC_HandleTypeDef hrtc;
 
@@ -89,6 +93,13 @@ const osThreadAttr_t task_tmc2209_ma_attributes = {
   .stack_size = 256 * 4,
   .priority = (osPriority_t) osPriorityBelowNormal,
 };
+/* Definitions for task_watchdog */
+osThreadId_t task_watchdogHandle;
+const osThreadAttr_t task_watchdog_attributes = {
+  .name = "task_watchdog",
+  .stack_size = 128 * 4,
+  .priority = (osPriority_t) osPriorityNormal,
+};
 /* USER CODE BEGIN PV */
 
 osMessageQueueId_t can_rx_queueHandle;
@@ -108,10 +119,12 @@ static void MX_TIM1_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_USART1_UART_Init(void);
 static void MX_USART2_UART_Init(void);
+static void MX_IWDG_Init(void);
 void start_task_can_handler(void *argument);
 void start_task_dispatcher(void *argument);
 void start_task_motion_controller(void *argument);
 void start_task_tmc2209_manager(void *argument);
+void start_task_watchdog(void *argument);
 
 /* USER CODE BEGIN PFP */
 
@@ -151,12 +164,15 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MotionDriver_AllSafe();
   MX_CAN_Init();
   MX_RTC_Init();
   MX_TIM1_Init();
   MX_TIM2_Init();
   MX_USART1_UART_Init();
   MX_USART2_UART_Init();
+  MotionDriver_AllSafe();
+  MX_IWDG_Init();
   /* USER CODE BEGIN 2 */
 
   AppConfig_Init();
@@ -209,12 +225,16 @@ int main(void)
   /* creation of task_tmc2209_ma */
   task_tmc2209_maHandle = osThreadNew(start_task_tmc2209_manager, NULL, &task_tmc2209_ma_attributes);
 
+  /* creation of task_watchdog */
+  task_watchdogHandle = osThreadNew(start_task_watchdog, NULL, &task_watchdog_attributes);
+
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
   if (task_can_handleHandle == NULL ||
       task_dispatcherHandle == NULL ||
       task_motion_conHandle == NULL ||
-      task_tmc2209_maHandle == NULL) {
+      task_tmc2209_maHandle == NULL ||
+      task_watchdogHandle == NULL) {
     Error_Handler();
   }
 
@@ -320,6 +340,34 @@ static void MX_CAN_Init(void)
   /* USER CODE BEGIN CAN_Init 2 */
 
   /* USER CODE END CAN_Init 2 */
+
+}
+
+/**
+  * @brief IWDG Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_IWDG_Init(void)
+{
+
+  /* USER CODE BEGIN IWDG_Init 0 */
+
+  /* USER CODE END IWDG_Init 0 */
+
+  /* USER CODE BEGIN IWDG_Init 1 */
+
+  /* USER CODE END IWDG_Init 1 */
+  hiwdg.Instance = IWDG;
+  hiwdg.Init.Prescaler = IWDG_PRESCALER_256;
+  hiwdg.Init.Reload = 624;
+  if (HAL_IWDG_Init(&hiwdg) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN IWDG_Init 2 */
+
+  /* USER CODE END IWDG_Init 2 */
 
 }
 
@@ -746,6 +794,25 @@ void start_task_tmc2209_manager(void *argument)
   /* USER CODE END start_task_tmc2209_manager */
 }
 
+/* USER CODE BEGIN Header_start_task_watchdog */
+/**
+* @brief Function implementing the task_watchdog thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_start_task_watchdog */
+void start_task_watchdog(void *argument)
+{
+  /* USER CODE BEGIN start_task_watchdog */
+  app_start_task_watchdog(argument);
+  /* Infinite loop */
+  for(;;)
+  {
+    osDelay(1);
+  }
+  /* USER CODE END start_task_watchdog */
+}
+
 /**
   * @brief  Period elapsed callback in non blocking mode
   * @note   This function is called  when TIM4 interrupt took place, inside
@@ -776,6 +843,7 @@ void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
   /* User can add his own implementation to report the HAL error return state */
+  MotionDriver_AllSafe();
   __disable_irq();
   while (1)
   {

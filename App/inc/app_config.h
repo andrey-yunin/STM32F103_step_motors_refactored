@@ -17,6 +17,18 @@
 #define MOTOR_COUNT                 8 // Общее количество моторов в системе
 #define MOTOR_ID_INVALID            0xFF // Значение для неинициализированного или неверного мотора
 
+// =============================================================================
+//                             НАСТРОЙКИ MOTION
+// =============================================================================
+
+// Локальный safe-limit Motion Executor. Дирижер задает requested speed,
+// но исполнитель обязан проверить, что такая частота STEP допустима для платы.
+#define MOTION_MAX_SAFE_SPEED_STEPS_PER_SEC    20000U
+
+// Motion task периодически проверяет completion-флаги, выставленные TIM ISR.
+// CAN DONE отправляется из task context, не из ISR.
+#define MOTION_COMPLETION_POLL_TIMEOUT_MS      10U
+
 // Версия прошивки
 #define FW_REV_MAJOR                0x01
 #define FW_REV_MINOR                0x00
@@ -37,6 +49,14 @@
 #define DISPATCHER_QUEUE_LEN        10
 #define MOTION_QUEUE_LEN            8  // Увеличено для поддержки всех 8 моторов одновременно
 #define TMC_MANAGER_QUEUE_LEN       8  // Увеличено
+
+// =============================================================================
+//                             ВРЕМЕННЫЕ ДИАГНОСТИЧЕСКИЕ ХУКИ
+// =============================================================================
+
+// TEMP: IWDG fault-injection. Включать только для стендовой проверки watchdog path.
+#define APP_WATCHDOG_TEST_STALL_MOTION_AFTER_ROTATE    0U
+#define APP_WATCHDOG_TEST_STALL_MOTION_MOTOR_ID        0U
 
 // Флаги для Task_CAN_Handler (osThreadFlags)
 #define FLAG_CAN_RX                 0x01

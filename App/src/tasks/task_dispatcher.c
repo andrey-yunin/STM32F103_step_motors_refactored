@@ -23,8 +23,29 @@
 #include "app_config.h"
 #include "app_flash.h"
 #include "task_dispatcher.h"
+#include "task_can_handler.h"
 #include "can_protocol.h"
 #include "command_protocol.h"
+#include "watchdog.h"
+
+// Отправляет одну метрику GET_STATUS.
+//
+// Формат DATA после служебных байтов CAN_SendData():
+// byte 2..3: metric_id, uint16 little-endian
+// byte 4..7: value, uint32 little-endian
+static void SendStatusMetric(uint16_t cmd_code, uint16_t metric_id, uint32_t value)
+{
+    uint8_t data[6];
+
+    data[0] = (uint8_t)(metric_id & 0xFF);
+    data[1] = (uint8_t)((metric_id >> 8) & 0xFF);
+    data[2] = (uint8_t)(value & 0xFF);
+    data[3] = (uint8_t)((value >> 8) & 0xFF);
+    data[4] = (uint8_t)((value >> 16) & 0xFF);
+    data[5] = (uint8_t)((value >> 24) & 0xFF);
+
+    CAN_SendData(cmd_code, data, sizeof(data));
+}
 
 void app_start_task_dispatcher(void *argument)
 {
@@ -33,9 +54,12 @@ void app_start_task_dispatcher(void *argument)
 
     for (;;) {
         // 1. Ожидаем команду из dispatcher_queue
-        if (osMessageQueueGet(dispatcher_queueHandle, &parsed, NULL, osWaitForever) != osOK) {
+        AppWatchdog_Heartbeat(APP_WDG_CLIENT_DISPATCHER);
+        if (osMessageQueueGet(dispatcher_queueHandle, &parsed, NULL,
+                              APP_WATCHDOG_TASK_IDLE_TIMEOUT_MS) != osOK) {
             continue;
         }
+        AppWatchdog_Heartbeat(APP_WDG_CLIENT_DISPATCHER);
 
         // 2. --- ЗОЛОТОЙ ЭТАЛОН: Немедленное подтверждение приема (ACK) ---
         CAN_SendAck(parsed.cmd_code);
@@ -88,7 +112,10 @@ void app_start_task_dispatcher(void *argument)
                 motion_cmd.command_id = CMD_STOP;
             }
 
-            osMessageQueuePut(motion_queueHandle, &motion_cmd, 0, 0);
+            if (osMessageQueuePut(motion_queueHandle, &motion_cmd, 0, 0) != osOK) {
+                CAN_Diagnostics_RecordAppQueueOverflow();
+                CAN_SendNackPublic(parsed.cmd_code, CAN_ERR_MOTOR_BUSY);
+            }
             break;
         }
 
@@ -179,6 +206,33 @@ void app_start_task_dispatcher(void *argument)
             // Пакет 2: UID[6..11]
             memcpy(data, &uid[6], 6);
             CAN_SendData(parsed.cmd_code, data, 6);
+
+            CAN_SendDone(parsed.cmd_code, 0);
+            break;
+        }
+
+        case CAN_CMD_SRV_GET_STATUS: {
+            CanDiagnostics_t diag;
+            CAN_Diagnostics_GetSnapshot(&diag);
+
+            SendStatusMetric(parsed.cmd_code, CAN_STATUS_RX_TOTAL, diag.rx_total);
+            SendStatusMetric(parsed.cmd_code, CAN_STATUS_TX_TOTAL, diag.tx_total);
+            SendStatusMetric(parsed.cmd_code, CAN_STATUS_RX_QUEUE_OVERFLOW, diag.rx_queue_overflow);
+            SendStatusMetric(parsed.cmd_code, CAN_STATUS_TX_QUEUE_OVERFLOW, diag.tx_queue_overflow);
+            SendStatusMetric(parsed.cmd_code, CAN_STATUS_DISPATCHER_OVERFLOW, diag.dispatcher_queue_overflow);
+            SendStatusMetric(parsed.cmd_code, CAN_STATUS_DROP_NOT_EXT, diag.dropped_not_ext);
+            SendStatusMetric(parsed.cmd_code, CAN_STATUS_DROP_WRONG_DST, diag.dropped_wrong_dst);
+            SendStatusMetric(parsed.cmd_code, CAN_STATUS_DROP_WRONG_TYPE, diag.dropped_wrong_type);
+            SendStatusMetric(parsed.cmd_code, CAN_STATUS_DROP_WRONG_DLC, diag.dropped_wrong_dlc);
+            SendStatusMetric(parsed.cmd_code, CAN_STATUS_TX_MAILBOX_TIMEOUT, diag.tx_mailbox_timeout);
+            SendStatusMetric(parsed.cmd_code, CAN_STATUS_TX_HAL_ERROR, diag.tx_hal_error);
+            SendStatusMetric(parsed.cmd_code, CAN_STATUS_ERROR_CALLBACK, diag.can_error_callback_count);
+            SendStatusMetric(parsed.cmd_code, CAN_STATUS_ERROR_WARNING, diag.error_warning_count);
+            SendStatusMetric(parsed.cmd_code, CAN_STATUS_ERROR_PASSIVE, diag.error_passive_count);
+            SendStatusMetric(parsed.cmd_code, CAN_STATUS_BUS_OFF, diag.bus_off_count);
+            SendStatusMetric(parsed.cmd_code, CAN_STATUS_LAST_HAL_ERROR, diag.last_hal_error);
+            SendStatusMetric(parsed.cmd_code, CAN_STATUS_LAST_ESR, diag.last_esr);
+            SendStatusMetric(parsed.cmd_code, CAN_STATUS_APP_QUEUE_OVERFLOW, diag.app_queue_overflow);
 
             CAN_SendDone(parsed.cmd_code, 0);
             break;

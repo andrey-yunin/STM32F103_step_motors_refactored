@@ -20,23 +20,67 @@
 #include "app_flash.h"
 #include "app_config.h"
 #include "can_protocol.h"
+#include "watchdog.h"
 
 // --- Внешние хэндлы HAL ---
 extern CAN_HandleTypeDef hcan;
+
+// Счетчики CAN diagnostics живут в transport layer: здесь видны drops,
+// переполнения очередей, TX mailbox/HAL errors и CAN fault states.
+static volatile CanDiagnostics_t g_can_diag;
 
 // Единая точка постановки CAN-фрейма в TX-очередь.
 //
 // Зачем:
 // - все ACK/NACK/DONE/DATA проходят через один путь;
 // - флаг CAN-задаче ставится только если фрейм реально попал в очередь;
-// - если очередь переполнена, мы не дергаем задачу впустую.
-//
-// Сейчас без статистики: переполнение просто приведет к отсутствию ответа,
-// а дирижер увидит timeout.
+// - если очередь переполнена, фиксируем это в GET_STATUS diagnostics.
 static void CAN_QueueTxFrame(CanTxFrame_t *tx)
 {
     if (osMessageQueuePut(can_tx_queueHandle, tx, 0, 0) == osOK) {
         osThreadFlagsSet(task_can_handleHandle, FLAG_CAN_TX);
+    } else {
+        g_can_diag.tx_queue_overflow++;
+    }
+}
+
+void CAN_Diagnostics_GetSnapshot(CanDiagnostics_t *out)
+{
+    if (out == NULL) {
+        return;
+    }
+
+    __disable_irq();
+    memcpy(out, (const void *)&g_can_diag, sizeof(CanDiagnostics_t));
+    __enable_irq();
+}
+
+void CAN_Diagnostics_RecordRxQueueOverflow(void)
+{
+    g_can_diag.rx_queue_overflow++;
+}
+
+void CAN_Diagnostics_RecordAppQueueOverflow(void)
+{
+    g_can_diag.app_queue_overflow++;
+}
+
+void CAN_Diagnostics_RecordCanError(uint32_t hal_error, uint32_t esr)
+{
+    g_can_diag.can_error_callback_count++;
+    g_can_diag.last_hal_error = hal_error;
+    g_can_diag.last_esr = esr;
+
+    if ((esr & CAN_ESR_EWGF) != 0U) {
+        g_can_diag.error_warning_count++;
+    }
+
+    if ((esr & CAN_ESR_EPVF) != 0U) {
+        g_can_diag.error_passive_count++;
+    }
+
+    if ((esr & CAN_ESR_BOFF) != 0U) {
+        g_can_diag.bus_off_count++;
     }
 }
 
@@ -192,23 +236,38 @@ void app_start_task_can_handler(void *argument)
         Error_Handler();
     }
 
-    // --- Активация прерываний RX FIFO0 ---
-    if (HAL_CAN_ActivateNotification(&hcan, CAN_IT_RX_FIFO0_MSG_PENDING) != HAL_OK) {
+    // --- Активация прерываний RX FIFO0 и диагностических CAN fault events ---
+    if (HAL_CAN_ActivateNotification(&hcan,
+                                     CAN_IT_RX_FIFO0_MSG_PENDING |
+                                     CAN_IT_RX_FIFO0_FULL |
+                                     CAN_IT_RX_FIFO0_OVERRUN |
+                                     CAN_IT_ERROR_WARNING |
+                                     CAN_IT_ERROR_PASSIVE |
+                                     CAN_IT_BUSOFF |
+                                     CAN_IT_LAST_ERROR_CODE |
+                                     CAN_IT_ERROR) != HAL_OK) {
         Error_Handler();
     }
 
     // --- Основной цикл (event-driven) ---
     for (;;) {
         // Ожидаем любой из флагов: RX или TX
+        AppWatchdog_Heartbeat(APP_WDG_CLIENT_CAN);
         uint32_t flags = osThreadFlagsWait(FLAG_CAN_RX | FLAG_CAN_TX,
                                            osFlagsWaitAny,
-                                           osWaitForever);
+                                           APP_WATCHDOG_TASK_IDLE_TIMEOUT_MS);
+        AppWatchdog_Heartbeat(APP_WDG_CLIENT_CAN);
+
+        if ((flags & osFlagsError) != 0U) {
+            continue;
+        }
 
         // === Обработка входящих сообщений (RX) ===
         if (flags & FLAG_CAN_RX) {
             while (osMessageQueueGet(can_rx_queueHandle, &rx_frame, NULL, 0) == osOK) {
                 // Проверяем Extended ID
                 if (rx_frame.header.IDE != CAN_ID_EXT) {
+                    g_can_diag.dropped_not_ext++;
                     continue;
                 }
 
@@ -219,16 +278,19 @@ void app_start_task_can_handler(void *argument)
 
                 // --- Программная фильтрация адреса (PerformerID или Broadcast) ---
                 if (dst_addr != AppConfig_GetPerformerID() && dst_addr != CAN_ADDR_BROADCAST) {
+                    g_can_diag.dropped_wrong_dst++;
                     continue;
                 }
 
                 // Обрабатываем только команды
                 if (msg_type != CAN_MSG_TYPE_COMMAND) {
+                    g_can_diag.dropped_wrong_type++;
                     continue;
                 }
 
                 // Директива 2.0: Строгий DLC=8 для всех команд типа COMMAND
                 if (rx_frame.header.DLC != 8) {
+                    g_can_diag.dropped_wrong_dlc++;
                     continue;
                 }
 
@@ -243,8 +305,13 @@ void app_start_task_can_handler(void *argument)
                     parsed.data[i] = rx_frame.data[3 + i];
                 }
 
-                // Отправляем в parser_queue
-                osMessageQueuePut(dispatcher_queueHandle, &parsed, 0, 0);
+                // Отправляем в dispatcher_queue. Если очередь заполнена,
+                // ACK/NACK отправить нельзя: политика ответов принадлежит Dispatcher.
+                if (osMessageQueuePut(dispatcher_queueHandle, &parsed, 0, 0) == osOK) {
+                    g_can_diag.rx_total++;
+                } else {
+                    g_can_diag.dispatcher_queue_overflow++;
+                }
             }
         }
 
@@ -261,7 +328,15 @@ void app_start_task_can_handler(void *argument)
                 }
 
                 if (HAL_CAN_GetTxMailboxesFreeLevel(&hcan) > 0) {
-                    HAL_CAN_AddTxMessage(&hcan, &tx_frame.header, tx_frame.data, &txMailbox);
+                    if (HAL_CAN_AddTxMessage(&hcan, &tx_frame.header, tx_frame.data, &txMailbox) == HAL_OK) {
+                        g_can_diag.tx_total++;
+                    } else {
+                        g_can_diag.tx_hal_error++;
+                        g_can_diag.last_hal_error = HAL_CAN_GetError(&hcan);
+                        g_can_diag.last_esr = hcan.Instance->ESR;
+                    }
+                } else {
+                    g_can_diag.tx_mailbox_timeout++;
                 }
             }
         }

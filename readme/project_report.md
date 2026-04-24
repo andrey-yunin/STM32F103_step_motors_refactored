@@ -743,12 +743,13 @@ motor_id извлекается из CAN ID, а не из payload
 
 #### 7.6.4. Формат DONE-ответа
 
-**Формат:** DLC=4, MsgType=`CAN_MSG_TYPE_DATA_DONE_LOG`
+**Формат:** DLC=8, MsgType=`CAN_MSG_TYPE_DATA_DONE_LOG`
 ```
 data[0] = CAN_SUB_TYPE_DONE (0x01)
 data[1] = cmd_code & 0xFF
 data[2] = (cmd_code >> 8) & 0xFF
 data[3] = device_id
+data[4..7] = 0x00
 ```
 
 Этого достаточно для идентификации завершённой операции при последовательном выполнении: `(src_addr + cmd_code + device_id)` однозначно определяют, какая именно команда завершена.
@@ -1098,7 +1099,7 @@ RX 07102000 [8] 01 01 F0 00 00 00 00 00
 ### 10.8. Текущий статус
 Базовый CAN Level A и расширенная часть CAN acceptance без нагрузок пройдены: `F001`, `F004`, unknown command, invalid motor id, foreign destination, short DLC и broadcast discovery работают согласно DDS-240 pattern. Проект готов к переходу на доменные команды без подключенных нагрузок.
 
-Тесты `F002`, `F003`, `F005`, `F006` отложены на отдельный этап, чтобы не смешивать smoke-test транспорта с изменением конфигурации и reset-сценариями. `F007 GET_STATUS` и статистика CAN-шины остаются следующим диагностическим этапом.
+Тесты `F002`, `F003`, `F005`, `F006` отложены на отдельный этап, чтобы не смешивать smoke-test транспорта с изменением конфигурации и reset-сценариями. На момент этого раздела `F007 GET_STATUS` еще не входил в smoke-test 22.04.2026; фактическая реализация и стендовая проверка закрыты позже в разделе `10.11`.
 
 ### 10.9. Доменные команды Motion без нагрузок
 
@@ -1200,7 +1201,7 @@ RX 05102000 [8] 04 01 00 00 00 00 00 00
 RX 07102000 [8] 01 04 01 00 00 00 00 00
 ```
 
-Оценка: `ROTATE` переводит мотор `0` в active-state и возвращает только `ACK`; автоматический `DONE` по завершению шагов пока не реализован. `STOP` снимает active-state и возвращает `DONE`.
+Оценка на момент исторического no-load прогона: `ROTATE` переводил мотор `0` в active-state и возвращал только `ACK`; автоматический `DONE` по завершению шагов еще не был реализован. `STOP` снимал active-state и возвращал `DONE`.
 
 #### MOTOR_BUSY
 Последовательность:
@@ -1228,4 +1229,467 @@ RX 07102000 [8] 01 04 01 00 00 00 00 00
 
 ### 10.10. Статус перед физическим движением
 
-Доменный CAN-путь Motion без нагрузок подтвержден. Перед тестами с физическим движением важно учитывать текущее ограничение: `ROTATE` запускает PWM/active-state, но автоматический подсчет шагов, остановка и `DONE` по фактическому завершению пока не реализованы. Поэтому любые проверки `ROTATE` должны сопровождаться явной командой `STOP`.
+Доменный CAN-путь Motion без нагрузок был подтвержден для старой реализации. На 24.04.2026 код изменен: `ROTATE` получил finite STEP completion и самостоятельный `DONE`; перед физическим движением теперь нужен повторный no-load regression уже без штатного `STOP`, затем измерение STEP/EN.
+
+### 10.11. CAN diagnostics `GET_STATUS` и транспортные счетчики
+
+23.04.2026 добавлен и проверен диагностический сервис `F007 GET_STATUS` с общим набором метрик DDS-240 `0x0001..0x0012`. Реализация включает snapshot API для счетчиков CAN handler, учет transport drops, переполнений очередей, TX mailbox/HAL ошибок, CAN error callback/status counters, `last_hal_error`, `last_esr` и application queue overflow.
+
+Сборка после внедрения прошла:
+
+```bash
+PATH=/home/andrey/st/stm32cubeide_1.19.0/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.linux64_1.0.0.202410170706/tools/bin:$PATH make -C Debug all -j4
+```
+
+Размер:
+
+```text
+text=43892, data=256, bss=14520, total=58668
+```
+
+Команда:
+
+```bash
+cansend can0 00201000#07F0000000000000
+```
+
+Фактически подтвержденный жизненный цикл: `ACK -> DATA metrics 0x0001..0x0012 -> DONE`. Первый чистый снимок после reset показал `RX_TOTAL=1`, `TX_TOTAL=1`, остальные счетчики `0`. `TX_TOTAL=1` в этом снимке ожидаем: snapshot снимается после отправки ACK текущего `F007`, но до DATA/DONE этой же транзакции.
+
+Проверены transport negative counters:
+
+| Тест | Команда | Подтвержденный результат по следующему `F007` |
+|:-----|:--------|:----------------------------------------------|
+| Short DLC | `cansend can0 00201000#01F0` | Ответ отсутствует, `DROP_WRONG_DLC (0x0009) = 1`. |
+| Foreign destination | `cansend can0 00211000#01F0000000000000` | Ответ отсутствует, `DROP_WRONG_DST (0x0007) = 1`. |
+| Wrong message type | `cansend can0 05201000#01F0000000000000` | Ответ отсутствует, `DROP_WRONG_TYPE (0x0008) = 1`. |
+| Standard CAN ID | `cansend can0 120#01F0000000000000` | Ответ отсутствует, `DROP_NOT_EXT (0x0006) = 0`, так как кадр отсекается аппаратным CAN-фильтром до firmware. |
+
+Финальный снимок после серии negative tests:
+
+```text
+0x0001 RX_TOTAL        = 5
+0x0002 TX_TOTAL        = 81
+0x0003 RX_QUEUE_OVF    = 0
+0x0004 TX_QUEUE_OVF    = 0
+0x0005 DISPATCHER_OVF  = 0
+0x0006 DROP_NOT_EXT    = 0
+0x0007 DROP_WRONG_DST  = 1
+0x0008 DROP_WRONG_TYPE = 1
+0x0009 DROP_WRONG_DLC  = 1
+0x000A..0x0012         = 0
+```
+
+Выводы:
+
+1. `F007 GET_STATUS` соответствует DDS-240 pattern: все DATA-метрики приходят до `DONE`, `DONE` завершает транзакцию.
+2. `DROP_WRONG_DLC`, `DROP_WRONG_DST` и `DROP_WRONG_TYPE` растут адресно и не смешиваются с прикладными `NACK`.
+3. Standard ID на текущей настройке bxCAN отфильтрован аппаратно; это безопасное поведение, но счетчик `DROP_NOT_EXT` физически не проверяется без изменения фильтра.
+4. Очереди, mailbox guard, HAL CAN error и CAN fault counters в нормальном стендовом прогоне остались нулевыми.
+5. CAN-level диагностика Motion считается закрытой для no-load этапа. Дальнейшие открытые блоки на момент этого прогона: `F002/F003/F005/F006`, safe-state hook, IWDG supervisor и архитектура завершения `ROTATE/HOME` перед физическими нагрузками.
+
+### 10.12. Регрессия после внедрения Motion safe-state hook
+
+23.04.2026 внедрен `MotionDriver_AllSafe()` и подключен к startup, `Error_Handler()` и fault handlers. После этого выполнена повторная регрессия на плате без подключенной нагрузки, только с поднятой CAN-шиной.
+
+Сборка после внедрения safe-state прошла:
+
+```bash
+PATH=/home/andrey/st/stm32cubeide_1.19.0/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.linux64_1.0.0.202410170706/tools/bin:$PATH make -C Debug -j4 all
+```
+
+Размер:
+
+```text
+text=44180, data=256, bss=14520, total=58956
+```
+
+Подтвержденный стендовый прогон:
+
+| Проверка | Команда | Фактический результат |
+|:---------|:--------|:----------------------|
+| `F001 GET_DEVICE_INFO` | `cansend can0 00201000#01F0000000000000` | `ACK + 3 DATA + DONE` |
+| `F004 GET_UID` | `cansend can0 00201000#04F0000000000000` | `ACK + 2 DATA + DONE` |
+| `F007 GET_STATUS` | `cansend can0 00201000#07F0000000000000` | `ACK + DATA metrics 0x0001..0x0012 + DONE`; snapshot: `RX_TOTAL=3`, `TX_TOTAL=10`, error/drop/fault counters `0` |
+| `STOP motor 0` | `cansend can0 00201000#0401000000000000` | `ACK + DONE`, `device_id=0` |
+| `STOP motor 7` | `cansend can0 00201000#0401070000000000` | `ACK + DONE`, `device_id=7` |
+| `ROTATE + STOP` | `ROTATE: cansend can0 00201000#010100E803000019`; затем `STOP` | `ROTATE` вернул только `ACK`; `STOP` вернул `ACK + DONE` |
+| `MOTOR_BUSY` | два `ROTATE` подряд без `STOP` | первый `ROTATE` вернул `ACK`; второй вернул `ACK + NACK 0x0003 Motor Busy`; последующий `STOP` вернул `ACK + DONE` |
+
+Вывод: внедрение safe-state не нарушило CAN service path, `GET_STATUS`, `STOP`, active-state для `ROTATE` и защиту `MOTOR_BUSY`. Проверка выполнена без механической нагрузки, поэтому она подтверждает регрессию транспорта и логики состояния, но не является физическим тестом движения.
+
+### 10.13. IWDG supervisor integration
+
+23.04.2026 внедрен IWDG supervisor по проверенному Fluidics pattern.
+
+Состав изменения:
+
+- включен HAL IWDG module;
+- IWDG настроен как STM32F103 reference profile: `Prescaler=256`, `Reload=624`;
+- добавлена отдельная задача `task_watchdog`;
+- `HAL_IWDG_Refresh()` вызывается только из `task_watchdog`;
+- критические задачи публикуют heartbeat: CAN handler, Dispatcher, MotionController, TMC manager;
+- ожидания критических задач переведены с `osWaitForever` на `APP_WATCHDOG_TASK_IDLE_TIMEOUT_MS = 500 ms`;
+- при отсутствии прогресса любого клиента supervisor вызывает `MotionDriver_AllSafe()` и прекращает refresh IWDG.
+
+Сборка после внедрения прошла:
+
+```bash
+PATH=/home/andrey/st/stm32cubeide_1.19.0/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.linux64_1.0.0.202410170706/tools/bin:$PATH make -C Debug -j4 all
+```
+
+Размер:
+
+```text
+text=44824, data=256, bss=14552, total=59632
+```
+
+Стендовый idle-тест без нагрузки выполнен 23.04.2026 после прошивки IWDG build. Условия: на плате нет нагрузки, поднята только CAN-шина.
+
+Последовательность проверки:
+
+```bash
+cansend can0 00201000#07F0000000000000
+# wait ~134 s
+cansend can0 00201000#01F0000000000000
+cansend can0 00201000#07F0000000000000
+```
+
+Первый `F007` после reset:
+
+```text
+RX_TOTAL = 3
+TX_TOTAL = 26
+0x0003..0x0012 = 0
+```
+
+После паузы около 134 секунд, `F001` и повторного `F007`:
+
+```text
+RX_TOTAL = 5
+TX_TOTAL = 51
+0x0003..0x0012 = 0
+```
+
+Вывод: idle-тест без ложного watchdog reset пройден. Счетчики не обнулились, а монотонно выросли `RX_TOTAL 3 -> 5` и `TX_TOTAL 26 -> 51`, значит за время ожидания reset не происходил. CAN error/drop/fault counters остались нулевыми.
+
+Fault-injection тест выполнен 23.04.2026 на временной прошивке с включенным `APP_WATCHDOG_TEST_STALL_MOTION_AFTER_ROTATE = 1U`. Hook останавливал heartbeat `MotionController` после `ROTATE` motor 0.
+
+Последовательность проверки:
+
+```bash
+cansend can0 00201000#01F0000000000000
+cansend can0 00201000#07F0000000000000
+cansend can0 00201000#010100E803000019
+# wait ~20 s
+cansend can0 00201000#01F0000000000000
+cansend can0 00201000#07F0000000000000
+```
+
+До fault-injection:
+
+```text
+F001: ACK + DATA + DONE
+F007: RX_TOTAL = 2, TX_TOTAL = 6, 0x0003..0x0012 = 0
+```
+
+После `ROTATE`:
+
+```text
+ROTATE: ACK only, DONE отсутствует
+```
+
+После ожидания и повторного `F001/F007`:
+
+```text
+F001: ACK + DATA + DONE
+F007: RX_TOTAL = 2, TX_TOTAL = 6, 0x0003..0x0012 = 0
+```
+
+Вывод: watchdog fault-injection пройден на no-load стенде. Отсутствие `DONE` после `ROTATE`, последующее восстановление связи через `F001` и сброс диагностических счетчиков к значениям свежего запуска подтверждают watchdog reset и recovery. Safe-state перед прекращением refresh подтвержден на уровне software path: supervisor при потере heartbeat вызывает `MotionDriver_AllSafe()` и только затем перестает обновлять IWDG. Физические уровни STEP/EN в этом тесте не измерялись, так как нагрузка не подключена.
+
+После теста fault-injection hook возвращен в выключенное состояние `APP_WATCHDOG_TEST_STALL_MOTION_AFTER_ROTATE = 0U`.
+
+Статус: интеграция, сборка, idle-приемка и no-load fault-injection/recovery закрыты. Открытым остается только физическое подтверждение safe-state уровней при подключении измерительного оборудования или нагрузки.
+
+## 11. Архитектурное решение по `DONE` и насосам
+
+23.04.2026 уточнена общая семантика `DONE` для экосистемы DDS-240.
+
+Принятое правило:
+
+- `ACK` - команда принята в обработку;
+- `DONE` - команда завершена по своему контракту;
+- `NACK`/`ERROR` - команда не выполнена;
+- аварийный safe-state/watchdog recovery не является штатным `DONE`.
+
+Ключевое следствие: смысл `DONE` не должен зависеть от типа устройства. Различаться должны только постусловия команд.
+
+Для Motion:
+
+- `MOTOR_ROTATE` и `MOTOR_HOME` являются finite-командами;
+- `DONE` должен отправляться только после фактического завершения движения, остановки STEP/PWM и обновления состояния оси;
+- текущая реализация Motion пока не закрывает это требование для `ROTATE/HOME`, поэтому блок остается отдельной архитектурной задачей после safe-state/IWDG.
+
+Для Fluidics:
+
+- дозирование насосом измеряется временем работы насоса;
+- целевая recipe-команда - `PUMP_RUN_DURATION(pump_id, duration_ms)`;
+- `duration_ms` рассчитывает Дирижер из Host-объема и калибровки;
+- Fluidics Executor сам включает насос, выдерживает `duration_ms`, выключает насос и только потом отправляет `DONE`;
+- `PUMP_START/PUMP_STOP` остаются сервисными/state-командами, но не должны быть основным способом дозирования через `WAIT_MS` на Дирижере.
+
+### 11.1. Разделение finite и state/continuous команд
+
+23.04.2026 отдельно зафиксировано, что `STOP` не является частью штатного завершения finite-команд. Предыдущие тесты `ROTATE + STOP` отражали только ограничение текущей реализации, а не целевую архитектуру.
+
+Finite-команды имеют внутреннее физическое условие завершения:
+
+- `MOTOR_ROTATE(steps, speed)`: исполнитель получает `steps`, генерирует ровно `abs(steps)` STEP-импульсов, останавливает PWM/STEP, обновляет позицию и отправляет `DONE`;
+- `MOTOR_HOME(...)`: исполнитель движется до home-condition, останавливает PWM/STEP, обновляет home/position state и отправляет `DONE`;
+- `PUMP_RUN_DURATION(duration_ms)`: исполнитель выдерживает время, выключает насос и отправляет `DONE`.
+
+State/continuous-команды переводят устройство в состояние:
+
+- `MOTOR_START_CONTINUOUS(speed)`: включает continuous PWM и отправляет `DONE` после успешного входа в режим;
+- `MOTOR_STOP`: останавливает активное/continuous/прерванное движение и отправляет собственный `DONE`;
+- `PUMP_START/PUMP_STOP`: сервисное или ручное управление состоянием, не основной recipe-примитив дозирования.
+
+Следствие для Motion: следующий блок реализации - не "ROTATE + STOP", а самостоятельное завершение `MOTOR_ROTATE`: счетчик оставшихся STEP должен дойти до нуля, после чего исполнитель сам останавливает канал и отправляет `DONE`.
+
+### 11.2. Разделение уровней команд
+
+23.04.2026 дополнительно зафиксировано разделение терминов, чтобы не смешивать Host API, low-level CAN и внутреннюю реализацию прошивки.
+
+Уровни команд:
+
+- Host-level команды: команды верхнего API, например `REACTION_ROTATE`, `SAMPLE_ROTATE`, `REAGENT_ROTATE`, `DISPENSER_MOVE`. Их получает Дирижер от Host и сам оркестрирует выполнение;
+- low-level Executor команды: CAN `cmd_code`, которые Дирижер отправляет конкретной плате-исполнителю, например `MOTOR_ROTATE 0x0101`, `MOTOR_HOME 0x0102`, `MOTOR_START_CONTINUOUS 0x0103`, `MOTOR_STOP 0x0104`, сервисные `0xF001..0xF007`;
+- внутренние команды прошивки: `CommandID_t` (`CMD_MOVE_RELATIVE`, `CMD_SET_SPEED`, `CMD_STOP` и т.п.), которые существуют только внутри Motion Executor и не являются внешним CAN/Host контрактом;
+- физический уровень: TIM/PWM/STEP/DIR/EN, который реализует уже принятую low-level команду.
+
+Правило для дальнейших отчетов: `ACK/DONE/NACK` Motion Executor описывать только относительно внешнего low-level `cmd_code`. Внутренние `CommandID_t` можно упоминать только как implementation detail.
+
+Текущая фактическая матрица Motion Executor по внешним low-level командам:
+
+- `0xF001 GET_DEVICE_INFO`: `ACK -> DATA -> DONE`;
+- `0xF002 REBOOT`: `ACK -> DONE -> reset` при верном magic key, иначе `ACK -> NACK`;
+- `0xF003 FLASH_COMMIT`: `ACK -> DONE` при успешном commit, иначе `ACK -> NACK`;
+- `0xF004 GET_UID`: `ACK -> DATA -> DONE`;
+- `0xF005 SET_NODE_ID`: `ACK -> DONE` при валидном NodeID, иначе `ACK -> NACK`;
+- `0xF006 FACTORY_RESET`: `ACK -> DONE -> reset` при верном magic key, иначе `ACK -> NACK`;
+- `0xF007 GET_STATUS`: `ACK -> DATA metrics -> DONE`;
+- `0x0104 MOTOR_STOP`: `ACK -> DONE`;
+- `0x0103 MOTOR_START_CONTINUOUS`: `ACK -> enter continuous PWM state -> DONE`; TIM-группа остается занятой до `MOTOR_STOP`;
+- `0x0101 MOTOR_ROTATE`: в текущем коде `ACK -> STEP finite completion -> DONE`; `DONE` отправляется после генерации `abs(steps)` STEP, остановки PWM/STEP и обновления позиции;
+- `0x0102 MOTOR_HOME`: настоящий `DONE` возможен только после home-condition; текущий путь через движение к позиции `0` не считать закрытой реализацией HOME.
+
+Следствие для Host-level команд: Host не получает эти `DONE` напрямую от Motion Executor. Дирижер переводит Host-команду в одну или несколько low-level команд, ждет их `DONE` от исполнителей и только затем отправляет Host-level `DONE` по своему протоколу.
+
+### 11.3. Корреляция Host `DONE`, Executor `DONE` и локальных completion-событий
+
+24.04.2026 дополнительно уточнено, что слово `DONE` допустимо использовать только для внешних протокольных ответов. Внутренние события прошивки не должны называться `DONE`, чтобы не смешивать уровни принятия решений.
+
+Уровень Host API:
+
+- Host отправляет Дирижеру команду верхнего уровня: например `WASH_STATION_FILL`, `SAMPLE_ROTATE`, `DISPENSER_ASPIRATE`, `REACTION_ROTATE`;
+- `Host DONE` отправляет только Дирижер;
+- `Host DONE` означает, что весь recipe/job верхнего уровня завершен успешно;
+- если один из атомарных шагов не получил подтверждения, завершился `NACK`, timeout или recovery, успешный `Host DONE` отправлять нельзя; сценарий должен завершаться ошибкой по политике Host-протокола.
+
+Уровень Дирижера:
+
+- Дирижер является владельцем recipe/job;
+- Дирижер переводит Host-команду в последовательность atomic actions;
+- для каждого atomic action Дирижер формирует low-level CAN-команду конкретному Executor;
+- `Executor DONE` продвигает только один atomic action, а не весь Host-рецепт;
+- `JobManager` имеет право отправить `Host DONE` только после получения успешного завершения всех atomic actions рецепта.
+
+Уровень Executor low-level CAN:
+
+- Executor принимает от Дирижера только low-level `cmd_code`;
+- `ACK` означает, что команда принята к обработке;
+- `DONE` означает, что именно эта low-level команда достигла своего постусловия;
+- `NACK` означает, что low-level команда не будет выполнена или не может быть выполнена;
+- `DONE` всегда возвращается с исходным low-level `cmd_code` и `device_id`, чтобы Дирижер мог сопоставить ответ с ожидаемым atomic action.
+
+Уровень внутренних событий прошивки:
+
+- локальные события `steps_remaining == 0`, `timer_expired`, `home_switch_triggered`, `motion_complete_event`, `pump_duration_expired` не являются `DONE`;
+- эти события должны называться `COMPLETE`, `EXPIRED`, `STOPPED`, `FAULT`, но не `DONE`;
+- внешний CAN `DONE` отправляет доменная задача Executor из task context после проверки состояния, обновления модели ресурса и безопасного завершения физического действия;
+- из ISR допустимо только остановить критический выход и поставить внутреннее событие/flag/queue item, но не формировать протокольный `DONE`.
+
+Следствие для Motion:
+
+- `MOTOR_ROTATE` должен завершаться внутренним событием `move_complete`, когда счетчик STEP дошел до нуля;
+- `MotionController` после этого обновляет `current_position`, `steps_to_go`, active-state и отправляет low-level `DONE`;
+- `STOP` во время active finite move является отдельной командой отмены/остановки и не превращает исходный `MOTOR_ROTATE` в успешный `DONE`;
+- `MOTOR_HOME` требует отдельного `home-condition`; без датчика/условия нельзя считать настоящий `HOME DONE` реализованным.
+
+Следствие для Fluidics:
+
+- старая схема `PUMP_START -> WAIT_MS -> PUMP_STOP` означала, что Дирижер сам контролирует длительность работы насоса;
+- целевая схема `PUMP_RUN_DURATION(duration_ms)` передает физический временной интервал исполнителю;
+- локальное событие `pump_duration_expired` выключает насос и только после этого Fluidics Executor отправляет `DONE` по `0x0201`;
+- `PUMP_START/PUMP_STOP` остаются state/service-командами, где `DONE` означает "насос включен" или "насос выключен", но не завершение дозирования объема.
+
+### 11.4. Контракт скорости и ускорения для Motion
+
+24.04.2026 отдельно зафиксирован владелец параметров движения, чтобы не смешивать Host API, recipe-конфигурацию и внутренний Motion Planner.
+
+Host API:
+
+- обычные технологические команды Host не должны требовать от пользователя скорость и ускорение двигателя;
+- Host задает предметную цель: слот, кювету, объем, позицию, тип операции;
+- скорость и ускорение не являются частью пользовательского контракта верхнего уровня, если отдельная сервисная/инженерная команда явно не предусматривает ручную настройку.
+
+Дирижер:
+
+- Дирижер переводит Host-параметры в физические параметры atomic action;
+- для `MOTOR_ROTATE` Дирижер обязан передать `steps` и `speed`;
+- `speed` является контрактом recipe-level atomic action: это простое числовое ограничение/целевая скорость, выбранная из recipe/action config или технологического профиля операции;
+- текущий проект Дирижера уже содержит `.speed` и `.speed_source` в `ACTION_ROTATE_MOTOR`, а packer упаковывает скорость в `MOTOR_ROTATE`;
+- Дирижер не передает `acceleration` в `MOTOR_ROTATE`;
+- Дирижер не должен считать `SET_SPEED/SET_ACCELERATION` отдельными Host-рецептными манипуляциями, если целевая команда уже содержит нужный физический параметр.
+
+Motion Executor:
+
+- `MOTOR_ROTATE(steps, speed)` является finite-командой;
+- `speed` в payload является requested target/max speed для данной low-level команды;
+- Motion валидирует `speed` против локального профиля оси: `min_speed`, `max_safe_speed`, допустимый диапазон таймера/драйвера;
+- если `speed` выходит за локальные безопасные пределы, базовая политика - `ACK -> NACK INVALID_PARAM` без запуска движения; молчаливое ограничение скорости допустимо только если оно отдельно описано в контракте и учтено Дирижером при timeout;
+- для ненулевого `steps` значение `speed=0` должно считаться invalid-param, иначе команда может перейти в active-state и никогда не завершиться;
+- для `steps=0` движение не требуется, допустим быстрый `ACK -> DONE` после валидации команды;
+- Motion обязан использовать скорость из текущей low-level команды при запуске finite movement, а не только сохраненное/default `max_speed_steps_per_sec`;
+- после завершения finite movement Motion может обновить свое внутреннее состояние, но не должен превращать командную скорость в неявный глобальный permanent config, если это не описано отдельной service/config командой.
+
+Acceleration:
+
+- ускорение сейчас не входит в payload `MOTOR_ROTATE 0x0101`;
+- текущее поле `acceleration_steps_per_sec2` является внутренним состоянием Motion Planner и имеет default-значение;
+- полноценный профиль разгона/торможения пока не реализован: `MotionPlanner_GetNextFrequency()` возвращает максимальную скорость как заглушку;
+- на текущем этапе acceleration считается локальной конфигурацией Motion Executor и реализуется внутри motion planner/driver, а не является частью внешнего low-level CAN-контракта;
+- acceleration определяет, как именно исполнитель физически выходит на command `speed` и тормозит перед завершением, но не меняет payload `MOTOR_ROTATE`;
+- локальный профиль ускорения должен быть per-axis или per-motor-class, потому что допустимый разгон зависит от механики, массы, тока драйвера, микрошагов и риска срыва шагов;
+- расширять CAN payload ради acceleration сейчас нецелесообразно, потому что strict `DLC=8` для `MOTOR_ROTATE` уже занят: `cmd_code + motor_id + int32 steps + uint8 speed`;
+- если позже потребуется внешнее управление профилями, предпочтительный путь - не ломать `MOTOR_ROTATE`, а ввести profile-id, отдельную config/service-команду или новую версию команды с явно описанным контрактом.
+
+Статус выявленного gap после правок 24.04.2026:
+
+- `task_dispatcher.c` парсит `speed` из `MOTOR_ROTATE` в `motion_cmd.speed_steps_per_sec`;
+- `task_motion_controller.c` теперь применяет command `speed` при запуске finite `MOTOR_ROTATE`;
+- `speed=0` при ненулевых `steps` отклоняется как `CAN_ERR_INVALID_PARAM`;
+- прежний риск "Дирижер передал speed, но Motion выполнил движение по default/max_speed" снят на уровне кода; требуется no-load regression на плате.
+
+### 11.5. Граница текущего industrial baseline и перспективного DDA/TIM3
+
+24.04.2026 принято решение не привязывать текущую приемку `MOTOR_ROTATE -> DONE` к переходу на DDA/TIM3.
+
+Текущий industrial baseline для Motion:
+
+- сохранить текущий TIM1/TIM2 PWM path для генерации STEP;
+- считать аппаратный ресурс двумя независимыми motion-группами:
+  - `TIM1 group`: моторы `0..3`, общий `PSC/ARR`, один активный motion profile в момент времени;
+  - `TIM2 group`: моторы `4..7`, общий `PSC/ARR`, один активный motion profile в момент времени;
+- разрешить параллельную работу максимум двух движений одновременно: одно на `TIM1 group` и одно на `TIM2 group`;
+- внутри одной timer group на текущем этапе разрешать только один active motor; конфликтующая команда на другой мотор той же группы должна получать `MOTOR_BUSY`;
+- реализовать finite completion для `MOTOR_ROTATE` через счетчик STEP-событий;
+- остановить PWM/STEP при достижении `remaining_steps == 0`;
+- отправлять low-level `DONE` из `MotionController` после обновления состояния оси;
+- применять и валидировать command `speed`;
+- не менять внешний контракт `MOTOR_ROTATE(steps, speed)`.
+
+Профиль скорости:
+
+- `speed` приходит от Дирижера отдельно для каждой low-level команды;
+- acceleration/deceleration на текущем этапе являются единым локальным профилем Motion Executor для всех моторов;
+- состояние профиля выполнения хранится на уровне timer group: active motor, target speed, current speed, remaining steps, phase acceleration/cruise/deceleration;
+- одинаковые правила acceleration/deceleration для всех моторов считаются допустимыми для текущего промышленного baseline.
+
+Следствие для Дирижера:
+
+- Дирижер должен учитывать `MOTOR_BUSY` как занятость ресурса motion group, а не только конкретного motor_id;
+- если рецепт потенциально запускает два движения параллельно, они допустимы только на разных группах `TIM1` и `TIM2`;
+- operation timeout для `MOTOR_ROTATE` рассчитывается по command `steps/speed` с запасом, но реальное время может быть больше из-за локального acceleration/deceleration profile;
+- если нужна строгая оценка времени с учетом профиля, Дирижер должен использовать консервативный запас или будущий общий калькулятор времени движения.
+
+DDA/TIM3 переносится в перспективное развитие без блокировки текущего промышленного стандарта. Возвращаться к нему следует только при подтвержденной технологической необходимости: независимые скорости нескольких осей сверх ограничений TIM1/TIM2 PWM, более сложные профили движения, централизованный software step scheduler или расширенная multi-axis coordination.
+
+Следствие: текущая реализация должна быть написана с чистыми границами, чтобы DDA/TIM3 можно было добавить позже за тем же low-level контрактом либо через новую версию команды, если когда-нибудь потребуется расширенный motion profile.
+
+### 11.6. Реализация baseline `MOTOR_ROTATE -> DONE`
+
+24.04.2026 в код Motion Executor внесен baseline finite completion для `MOTOR_ROTATE` на текущем TIM1/TIM2 PWM path.
+
+Реализовано:
+
+- `MotionDriver_StartFinite(motor_id, frequency, steps)` запускает PWM в interrupt mode и хранит счетчик оставшихся STEP;
+- `HAL_TIM_PWM_PulseFinishedCallback()` уменьшает счетчик STEP, на нуле останавливает PWM/STEP, выключает EN и выставляет внутренний completion flag;
+- `MotionDriver_ConsumeCompletedMotor()` отдает completion в `MotionController`;
+- `MotionController` отправляет low-level `DONE` только из task context, после обновления `current_position`, `steps_to_go` и active-state;
+- `MOTOR_ROTATE` использует `speed` из payload текущей команды и отклоняет `speed=0` при ненулевых `steps` как `CAN_ERR_INVALID_PARAM`;
+- `steps=0` остается быстрым successful completion без запуска PWM;
+- `MOTOR_START_CONTINUOUS` при `speed>0` входит в continuous PWM state, удерживает TIM-группу до `MOTOR_STOP` и отправляет `DONE` после включения режима;
+- добавлена занятость shared timer resource: `TIM1 group = motors 0..3`, `TIM2 group = motors 4..7`, конфликт на занятой группе возвращает `MOTOR_BUSY`;
+- для TIM1 подключен `TIM1_CC_IRQHandler`, TIM2 использует существующий `TIM2_IRQHandler`.
+
+Сборка после правок:
+
+```text
+make -C Debug -j4 all
+Result: PASS
+text=47736 data=256 bss=14640
+```
+
+Ограничения текущего шага:
+
+- физическая проверка STEP/EN после completion еще не выполнена;
+- `MOTOR_HOME` с настоящим home-condition не закрыт и остается отдельным hardware-блоком;
+- полноценный acceleration/deceleration profile еще не реализован, текущий baseline выполняет constant-speed finite move.
+
+### 11.7. Точка остановки на 24.04.2026 и вход на 27.04.2026
+
+Текущая кодовая точка:
+
+- safety, CAN service path, `F007 GET_STATUS`, IWDG supervisor и no-load recovery база уже были закрыты ранее;
+- сегодня закрыт кодовый baseline `MOTOR_ROTATE -> DONE`: finite STEP counter, auto-stop PWM/STEP, обновление state и `DONE` из task context;
+- дополнительно приведен к контракту `MOTOR_START_CONTINUOUS`: при `speed>0` это state-команда входа в continuous PWM mode, выход через `MOTOR_STOP`;
+- сборка после всех правок проходит: `text=47736`, `data=256`, `bss=14640`;
+- отчеты и ecosystem/playbook синхронизированы с разделением Host DONE, Executor DONE и внутренних completion-событий.
+
+Что еще не считать проверенным:
+
+- `MOTOR_ROTATE -> DONE` пока подтвержден сборкой, но не стендом;
+- не измерено фактическое количество STEP-импульсов и уровень EN после completion;
+- не проверен `MOTOR_BUSY` на уровне общей TIM-группы после новой реализации;
+- не проверен `START_CONTINUOUS speed>0` после новой реализации;
+- настоящий `MOTOR_HOME` не реализован без подтвержденного home-condition;
+- acceleration/deceleration остается будущим локальным motion-profile блоком.
+
+Быстрый вход в понедельник, 27.04.2026:
+
+1. Прошить текущую сборку Motion.
+2. Поднять CAN и проверить `F001`/`F007`, чтобы убедиться, что плата жива и счетчики стартуют ожидаемо.
+3. Выполнить no-load `MOTOR_ROTATE` на малом числе шагов: ожидание `ACK`, затем самостоятельный `DONE` без штатного `STOP`.
+4. Проверить negative case: `MOTOR_ROTATE steps != 0, speed=0` должен дать `ACK + NACK(CAN_ERR_INVALID_PARAM)`.
+5. Проверить group busy: запустить `ROTATE` на motor `0`, затем конфликтующий `ROTATE` на motor `1`; ожидание `MOTOR_BUSY`. Аналогично отдельно для `TIM2 group` при необходимости.
+6. Проверить `START_CONTINUOUS speed>0`: ожидание `ACK + DONE`, затем `MOTOR_STOP -> ACK + DONE`.
+7. Только после no-load CAN regression переходить к логическому анализатору/осциллографу: количество STEP равно `abs(steps)`, после completion STEP остановлен, EN в idle.
+
+Документационные правки внесены в:
+
+- `readme/DDS-240_eko_system/DDS-240_ECOSYSTEM_STANDARD.md`;
+- `readme/DDS-240_eko_system/CONDUCTOR_INTEGRATION_GUIDE.md`;
+- `readme/DDS-240_eko_system/dds240_global_config.h`;
+- `readme/DDS-240_eko_system/FLUIDICS_PUMP_RUN_DURATION_MIGRATION.md`;
+- `readme/DDS-240_eko_system/EXECUTOR_INDUSTRIALIZATION_PLAYBOOK.md`;
+- `readme/DDS-240_eko_system/EXECUTOR_TESTING_GUIDE.md`;
+- `readme/DDS-240_eko_system/SERVICE_INFRASTRUCTURE_CONCEPT.md`;
+- `readme/Commands_API/CAN_Protocol/2_Frame_Format.md`;
+- `readme/Commands_API/CAN_Protocol/3_Application_Layer.md`;
+- `readme/Commands_API/CAN_Protocol/4_Examples.md`;
+- `readme/Commands_API/CAN_Protocol/5_Low_Level_Commands.md`;
+- `readme/Commands_API/CAN_Protocol/6_Parameter_Packing.md`;
+- `readme/Commands_API/CAN_Protocol/7_Full_CAN_Frame_Mapping.md`;
+- `readme/executor_architecture_guide.md`;
+- `readme/refactoring_plan.md`.

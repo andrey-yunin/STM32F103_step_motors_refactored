@@ -394,13 +394,13 @@ text=43044, data=256, bss=14448, total=57748
 - [x] Проверить `MOTOR_BUSY`:
     - [x] Повторный `ROTATE` на активный канал вернул `ACK + NACK(0x0003 Motor Busy)`.
     - [x] Последующий `STOP` вернул `ACK + DONE`.
-- [ ] Перед физическими тестами движения учитывать ограничение текущей реализации: для `ROTATE` нет автоматического подсчета шагов, остановки и `DONE` по фактическому завершению.
+- [x] Историческое ограничение этого no-load прогона снято в коде 24.04.2026: `ROTATE` получил finite STEP completion и самостоятельный `DONE`; требуется повторный no-load regression без штатного `STOP`.
 
 ---
 
 ## 11. Этап: доведение Motion до DDS-240 industrial pattern (план на 23.04.2026)
 
-**Цель:** продолжить работу от проверенной точки 22.04.2026 без опоры на историю чата. Рабочий ориентир - `readme/DDS-240_eko_system/EXECUTOR_INDUSTRIALIZATION_PLAYBOOK.md`, `DDS-240_ECOSYSTEM_STANDARD.md`, `CONDUCTOR_INTEGRATION_GUIDE.md` раздел `8.9` и отчет `project_report.md` разделы `10.6..10.10`.
+**Цель:** продолжить работу от проверенной точки 22-23.04.2026 без опоры на историю чата. Рабочий ориентир - `readme/DDS-240_eko_system/EXECUTOR_INDUSTRIALIZATION_PLAYBOOK.md`, `DDS-240_ECOSYSTEM_STANDARD.md`, `CONDUCTOR_INTEGRATION_GUIDE.md` раздел `8.9` и отчет `project_report.md` разделы `10.6..10.11`.
 
 Старые разделы плана выше считаются историческими, если они противоречат текущей реализации. Актуальная база - раздел `10` и этот раздел `11`.
 
@@ -411,16 +411,20 @@ text=43044, data=256, bss=14448, total=57748
 - [x] Сервисный smoke: `F001 GET_DEVICE_INFO`, `F004 GET_UID`.
 - [x] Negative/addressing tests: unknown command, invalid motor id, foreign destination, short DLC, broadcast discovery.
 - [x] Доменные команды без нагрузок: `STOP 0`, `STOP 7`, `HOME 0` без движения, `START_CONTINUOUS speed=0`, `ROTATE + STOP`, `MOTOR_BUSY`.
+- [x] `F007 GET_STATUS`: `ACK -> DATA metrics 0x0001..0x0012 -> DONE`, порядок многокадрового ответа подтвержден.
+- [x] Регрессия после внедрения Motion safe-state hook подтверждена без нагрузки: `F001`, `F004`, `F007`, `STOP 0`, `STOP 7`, `ROTATE + STOP`, `MOTOR_BUSY`.
+- [x] CAN diagnostics counters: `DROP_WRONG_DLC`, `DROP_WRONG_DST`, `DROP_WRONG_TYPE` проверены физически; queue/HAL/fault counters в нормальном прогоне нулевые.
 - [x] Flash config page исключена из application area: `FLASH LENGTH = 63K`, config page `0x0800FC00..0x0800FFFF`.
 - [x] RTOS resource checks для очередей и задач добавлены; heap установлен `8192`.
 
 ### 11.2. Открытые ограничения
 
-- [ ] `F007 GET_STATUS` и счетчики CAN diagnostics не реализованы.
-- [ ] `CAN1_SCE_IRQHandler()` и `HAL_CAN_ErrorCallback()` не включены в рабочий diagnostic path.
+- [ ] `DROP_NOT_EXT` не подтверждается программным счетчиком на текущем bxCAN-фильтре: Standard ID отсекается аппаратно до firmware. Поведение безопасное, ответ отсутствует.
+- [ ] `CAN1_SCE_IRQHandler()` и `HAL_CAN_ErrorCallback()` подключены; в нормальном прогоне счетчики ошибок нулевые, но отдельная fault-injection проверка CAN error/status counters не выполнялась.
 - [ ] `F002 REBOOT`, `F003 COMMIT`, `F005 SET_NODE_ID`, `F006 FACTORY_RESET` реализованы частично/в коде, но не закрыты стендовыми тестами на Motion.
-- [ ] Motion safe-state hook не выделен как самостоятельный безRTOSный путь для `Error_Handler()` и fault handlers.
-- [ ] IWDG supervisor отсутствует.
+- [x] Motion safe-state hook выделен как самостоятельный безRTOSный путь и подключен к startup/Error_Handler/fault handlers; стендовая регрессия без нагрузок после внедрения подтверждена 23.04.2026.
+- [x] IWDG supervisor внедрен, собирается, прошел idle-тест без ложного reset и no-load fault-injection/recovery 23.04.2026.
+- [ ] Физическое подтверждение safe-state уровней STEP/EN при watchdog fault path не выполнялось: на стенде нет нагрузки/измерения выходов.
 - [ ] `ROTATE/HOME` не имеют автоматического подсчета шагов, остановки и `DONE` по фактическому завершению.
 - [ ] Физические тесты с драйвером/мотором не начинались.
 
@@ -428,39 +432,48 @@ text=43044, data=256, bss=14448, total=57748
 
 #### A. `F007 GET_STATUS` и CAN diagnostics
 
-- [ ] Синхронизировать `App/inc/can_protocol.h` с общим набором DDS-240:
-    - [ ] `CAN_CMD_SRV_GET_STATUS = 0xF007`.
-    - [ ] `CAN_STATUS_*` metric_id `0x0001..0x0012`.
-    - [ ] при необходимости добавить общий `CAN_ERR_INVALID_PARAM = 0x0006`, не ломая уже проверенные коды.
-- [ ] Добавить структуру диагностических счетчиков CAN:
-    - [ ] RX accepted.
-    - [ ] TX submitted to HAL.
-    - [ ] RX queue overflow.
-    - [ ] TX queue overflow.
-    - [ ] Dispatcher queue overflow.
-    - [ ] dropped not Extended ID.
-    - [ ] dropped wrong destination.
-    - [ ] dropped wrong message type.
-    - [ ] dropped wrong DLC.
-    - [ ] TX mailbox timeout.
-    - [ ] TX HAL error.
-    - [ ] CAN error callback count.
-    - [ ] error warning/passive/bus-off counters.
-    - [ ] last HAL error.
-    - [ ] last ESR snapshot.
-    - [ ] domain/application queue overflow.
-- [ ] Инкрементировать счетчики строго в местах фактического события:
-    - [ ] transport drops - в `task_can_handler.c`.
-    - [ ] RX ISR queue overflow - в `stm32f1xx_it.c`.
-    - [ ] dispatcher queue overflow - при `osMessageQueuePut(dispatcher_queueHandle, ...) != osOK`.
-    - [ ] motion queue overflow - при `osMessageQueuePut(motion_queueHandle, ...) != osOK`.
-    - [ ] TX mailbox/HAL errors - в TX path CAN handler.
-- [ ] Добавить snapshot API, чтобы Dispatcher мог безопасно читать счетчики без прямого доступа к внутренним static-данным CAN handler.
-- [ ] Реализовать `GET_STATUS`: `ACK -> DATA metric 0x0001..0x0012 -> DONE`.
-- [ ] Проверить на стенде:
-    - [ ] `cansend can0 00201000#07F0000000000000`.
-    - [ ] порядок `ACK -> DATA... -> DONE`.
-    - [ ] рост счетчиков после short DLC, foreign dst, unknown command и invalid motor id.
+- [x] Синхронизировать `App/inc/can_protocol.h` с общим набором DDS-240:
+    - [x] `CAN_CMD_SRV_GET_STATUS = 0xF007`.
+    - [x] `CAN_STATUS_*` metric_id `0x0001..0x0012`.
+    - [x] добавлен общий `CAN_ERR_INVALID_PARAM = 0x0006`, проверенные коды `0x0001..0x0005` не изменены.
+- [x] Добавить структуру диагностических счетчиков CAN:
+    - [x] RX accepted.
+    - [x] TX submitted to HAL.
+    - [x] RX queue overflow.
+    - [x] TX queue overflow.
+    - [x] Dispatcher queue overflow.
+    - [x] dropped not Extended ID.
+    - [x] dropped wrong destination.
+    - [x] dropped wrong message type.
+    - [x] dropped wrong DLC.
+    - [x] TX mailbox timeout.
+    - [x] TX HAL error.
+    - [x] CAN error callback count.
+    - [x] error warning/passive/bus-off counters.
+    - [x] last HAL error.
+    - [x] last ESR snapshot.
+    - [x] domain/application queue overflow.
+- [x] Инкрементировать счетчики строго в местах фактического события:
+    - [x] transport drops - в `task_can_handler.c`.
+    - [x] RX ISR queue overflow - в `stm32f1xx_it.c`.
+    - [x] dispatcher queue overflow - при `osMessageQueuePut(dispatcher_queueHandle, ...) != osOK`.
+    - [x] motion queue overflow - при `osMessageQueuePut(motion_queueHandle, ...) != osOK`.
+    - [x] TX mailbox/HAL errors - в TX path CAN handler.
+- [x] Добавить snapshot API, чтобы Dispatcher мог безопасно читать счетчики без прямого доступа к внутренним static-данным CAN handler.
+- [x] Реализовать `GET_STATUS`: `ACK -> DATA metric 0x0001..0x0012 -> DONE`.
+- [x] Подключить CAN SCE IRQ и `HAL_CAN_ErrorCallback()` для error/status diagnostics.
+- [x] Сборка после реализации проходит:
+    - [x] `PATH=/home/andrey/st/stm32cubeide_1.19.0/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.linux64_1.0.0.202410170706/tools/bin:$PATH make -C Debug all -j4`.
+    - [x] Размер: `text=43892`, `data=256`, `bss=14520`, `total=58668`.
+- [x] Проверить на стенде:
+    - [x] `cansend can0 00201000#07F0000000000000`.
+    - [x] порядок `ACK -> DATA metrics 0x0001..0x0012 -> DONE`.
+    - [x] `Short DLC`: `DROP_WRONG_DLC (0x0009) = 1`.
+    - [x] `Foreign dst`: `DROP_WRONG_DST (0x0007) = 1`.
+    - [x] `Wrong msg type`: `DROP_WRONG_TYPE (0x0008) = 1`.
+    - [x] `Standard ID`: ответа нет, `DROP_NOT_EXT (0x0006) = 0`, так как кадр отсекается аппаратным CAN-фильтром до software.
+    - [x] Финальный снимок после negative tests: `RX_TOTAL=5`, `TX_TOTAL=81`, `DROP_WRONG_DST=1`, `DROP_WRONG_TYPE=1`, `DROP_WRONG_DLC=1`, `0x000A..0x0012=0`.
+- [ ] Отложено на fault/stress этап: принудительное подтверждение queue overflow, TX mailbox timeout, HAL CAN error и CAN error warning/passive/bus-off counters.
 
 #### B. Проверка сервисного слоя `F002/F003/F005/F006`
 
@@ -474,49 +487,156 @@ text=43044, data=256, bss=14448, total=57748
 
 #### C. Motion safe-state hook
 
-- [ ] Выделить безRTOSную функцию безопасного состояния, например `MotionDriver_AllSafe()`:
-    - [ ] остановить PWM/STEP на всех каналах;
-    - [ ] disable всех драйверов;
-    - [ ] не использовать CAN, queue, mutex, dynamic memory, длительные задержки.
-- [ ] Вызывать safe-state:
-    - [ ] при старте после инициализации GPIO/таймеров;
-    - [ ] в `Error_Handler()`;
-    - [ ] в fault handlers до аварийного цикла.
-- [ ] Сохранить `MotionDriver_Init()` как штатную инициализацию, но не смешивать ее с fault-safe path, если там есть потенциально небезопасные зависимости.
-- [ ] Проверить регрессию CAN и доменных команд без нагрузок после внедрения.
+- [x] Выделить безRTOSную функцию безопасного состояния `MotionDriver_AllSafe()`:
+    - [x] остановить PWM/STEP на всех каналах;
+    - [x] disable всех драйверов;
+    - [x] не использовать CAN, queue, mutex, dynamic memory, длительные задержки.
+- [x] Вызывать safe-state:
+    - [x] при старте после инициализации GPIO/таймеров;
+    - [x] в `Error_Handler()`;
+    - [x] в fault handlers до аварийного цикла.
+- [x] Свести штатную инициализацию Motion к тому же safe-state hook, чтобы не было двух разных путей безопасного отключения.
+- [x] Сборка после внедрения прошла через локальный STM32CubeIDE toolchain.
+- [x] Проверить регрессию CAN и доменных команд без нагрузок после внедрения:
+    - [x] сборка: `text=44180`, `data=256`, `bss=14520`, `total=58956`;
+    - [x] `F001 GET_DEVICE_INFO`: `ACK + 3 DATA + DONE`;
+    - [x] `F004 GET_UID`: `ACK + 2 DATA + DONE`;
+    - [x] `F007 GET_STATUS`: `ACK -> DATA metrics 0x0001..0x0012 -> DONE`, counters без ошибок;
+    - [x] `STOP 0`, `STOP 7`: `ACK + DONE`;
+    - [x] `ROTATE + STOP`: `ROTATE` дает `ACK`, `STOP` дает `ACK + DONE`;
+    - [x] `MOTOR_BUSY`: повторный `ROTATE` дает `ACK + NACK 0x0003`, затем `STOP` дает `ACK + DONE`.
+- [ ] Опционально, не блокер текущего этапа: выполнить safe-state hardening из `DDS-240_ECOSYSTEM_STANDARD.md` раздел `2.5.1.1`:
+    - [ ] прямой GPIO `BSRR/BRR` в fault path;
+    - [ ] дополнительное отключение timer outputs/interrupts pending bits;
+    - [ ] повторный safe-state после инициализации TIM1/TIM2.
 
 #### D. IWDG supervisor
 
-- [ ] Включить IWDG в CubeMX только после safe-state hook.
-- [ ] Добавить `app_watchdog.h/c` и `task_watchdog`.
-- [ ] Клиенты heartbeat: CAN handler, Dispatcher, MotionController, TMC manager.
-- [ ] Перевести ожидания критических задач с бесконечных блокировок на finite timeout, чтобы они могли публиковать heartbeat.
-- [ ] Единственное место `HAL_IWDG_Refresh()` - supervisor task.
+- [x] Включить IWDG в CubeMX только после safe-state hook.
+- [x] Настроить IWDG по проверенному STM32F103 Fluidics profile: `Prescaler=256`, `Reload=624`.
+- [x] Добавить `task_watchdog` как отдельную supervisor-задачу.
+- [x] Клиенты heartbeat: CAN handler, Dispatcher, MotionController, TMC manager.
+- [x] Перевести ожидания критических задач с бесконечных блокировок на finite timeout, чтобы они могли публиковать heartbeat.
+- [x] Единственное место `HAL_IWDG_Refresh()` - supervisor task.
+- [x] При отсутствии heartbeat supervisor вызывает `MotionDriver_AllSafe()` и прекращает refresh IWDG.
+- [x] Сборка после внедрения проходит:
+    - [x] `PATH=/home/andrey/st/stm32cubeide_1.19.0/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.linux64_1.0.0.202410170706/tools/bin:$PATH make -C Debug -j4 all`;
+    - [x] размер: `text=44824`, `data=256`, `bss=14552`, `total=59632`.
 - [ ] Проверить:
-    - [ ] idle без ложного reset;
-    - [ ] fault-injection зависания задачи;
-    - [ ] safe-state перед reset;
-    - [ ] восстановление связи через `F001`.
+    - [x] idle без ложного reset: пауза около 134 s, затем `F001` и `F007`; counters сохранились и выросли `RX_TOTAL 3 -> 5`, `TX_TOTAL 26 -> 51`, error/drop/fault counters `0`;
+    - [x] fault-injection зависания задачи: временный hook остановил heartbeat `MotionController` после `ROTATE` motor 0;
+    - [x] safe-state перед reset подтвержден на уровне software path: supervisor вызывает `MotionDriver_AllSafe()` перед прекращением refresh IWDG;
+    - [x] восстановление связи через `F001` после watchdog reset;
+    - [x] после теста временный hook выключен: `APP_WATCHDOG_TEST_STALL_MOTION_AFTER_ROTATE = 0U`;
+    - [ ] физическое измерение STEP/EN в watchdog fault path при подключенном измерительном оборудовании.
 
 #### E. Архитектура завершения движения `ROTATE/HOME`
 
-- [ ] Не начинать как мелкую правку. Сначала принять архитектурное решение.
-- [ ] Зафиксировать выбранный режим:
-    - [ ] оставить текущий PWM как `START_CONTINUOUS`, а `ROTATE/HOME` реализовать отдельным счетчиком шагов;
-    - [ ] или перейти на DDA/TIM3 для независимого управления каналами;
-    - [ ] или ввести другой проверяемый механизм генерации ограниченного числа STEP.
-- [ ] После решения реализовать:
-    - [ ] подсчет шагов;
-    - [ ] автоматическую остановку;
-    - [ ] `DONE` только после фактического завершения;
-    - [ ] корректный `STOP` в любой момент;
-    - [ ] `MOTOR_BUSY` для конфликтующих команд.
-- [ ] Только после этого переходить к полноценным физическим тестам движения.
+- [x] Не начинать как мелкую правку. Архитектурное решение принято и зафиксировано до кодовых изменений.
+- [x] Разделить терминологию:
+    - [x] Host-level команды: `REACTION_ROTATE`, `SAMPLE_ROTATE`, `REAGENT_ROTATE`, `DISPENSER_MOVE` и т.п.; их получает Дирижер от Host;
+    - [x] low-level Executor команды: CAN `cmd_code`, например `MOTOR_ROTATE 0x0101`, `MOTOR_HOME 0x0102`, `MOTOR_START_CONTINUOUS 0x0103`, `MOTOR_STOP 0x0104`, сервисные `0xF001..0xF007`;
+    - [x] внутренние команды прошивки: `CommandID_t` (`CMD_MOVE_RELATIVE`, `CMD_SET_SPEED`, `CMD_STOP`), не внешний CAN/Host контракт;
+    - [x] физический уровень: TIM/PWM/STEP/DIR/EN.
+- [x] Разделить `DONE` по уровням:
+    - [x] `Host DONE` отправляет только Дирижер после завершения всего recipe/job;
+    - [x] `Executor DONE` завершает только одну low-level atomic-команду Дирижера;
+    - [x] внутренние события прошивки не называть `DONE`; использовать `COMPLETE/EXPIRED/STOPPED/FAULT`;
+    - [x] CAN `DONE` отправлять из task context после обновления state, а не напрямую из ISR.
+- [x] В отчетах по `ACK/DONE/NACK` использовать только внешний low-level `cmd_code`; внутренние `CommandID_t` упоминать только как implementation detail.
+- [x] Зафиксировать текущую фактическую матрицу `DONE` для Motion Executor по low-level `cmd_code`.
+- [x] Зафиксировать контракт скорости/ускорения:
+    - [x] Host API задает технологическую цель, а не скорость/ускорение мотора;
+    - [x] `speed` является контрактом recipe-level atomic action; Дирижер выбирает его из recipe/action config или технологического профиля;
+    - [x] `MOTOR_ROTATE` low-level payload содержит `steps` и `speed`;
+    - [x] Motion Executor обязан применить `speed` текущей finite-команды;
+    - [x] Motion Executor валидирует `speed` против локального профиля оси и не запускает движение при небезопасном/невалидном значении;
+    - [x] `acceleration` не входит в low-level payload и остается локальной конфигурацией Motion Planner/Driver;
+    - [x] acceleration реализует физический профиль разгона/торможения внутри исполнителя и зависит от механики конкретной оси;
+    - [x] `CMD_SET_SPEED/CMD_SET_ACCELERATION` считать implementation detail или будущими service/config-командами, но не Host-рецептными манипуляциями.
+- [x] Зафиксировать выбранный режим текущего промышленного доведения:
+    - [x] оставить текущий TIM1/TIM2 PWM path;
+    - [x] ввести две независимые motion-группы: `TIM1 group = motors 0..3`, `TIM2 group = motors 4..7`;
+    - [x] в каждой motion-группе разрешить максимум один active motor/profile одновременно;
+    - [x] конфликтующую команду на занятую motion-group отклонять как `MOTOR_BUSY`;
+    - [x] параллельные движения разрешать только если они находятся на разных motion-группах;
+    - [x] `MOTOR_ROTATE` реализовать через счетчик STEP-событий, auto-stop PWM/STEP и low-level `DONE` из MotionController task context;
+    - [x] acceleration/deceleration считать единым локальным профилем Motion Executor для всех моторов, с отдельным runtime-state на motion-group;
+    - [x] `MOTOR_START_CONTINUOUS` оставить state/continuous-командой на PWM path;
+    - [x] DDA/TIM3 не является обязательным условием текущего промышленного стандарта и переносится в перспективное развитие без блокировки `MOTOR_ROTATE -> DONE`.
+- [ ] Требования к семантике:
+    - [x] `DONE` finite-команды `MOTOR_ROTATE` отправляется только после фактического completion от STEP-счетчика;
+    - [x] `MOTOR_ROTATE`: исполнитель получает `steps`, генерирует ровно `abs(steps)` STEP, сам останавливает PWM/STEP, обновляет позицию и отправляет `DONE`;
+    - [ ] `MOTOR_HOME`: `DONE` только после home-condition, остановки PWM/STEP и обновления home/position state;
+    - [x] `MOTOR_START_CONTINUOUS`: state/continuous команда, `DONE` после успешного входа в continuous mode;
+    - [x] `MOTOR_STOP`: отдельная команда остановки active/continuous/прерванного движения, со своим `DONE`;
+    - [x] `STOP` не является частью штатного завершения `ROTATE`;
+    - [x] `MOTOR_BUSY` для конфликтующих команд, включая занятость общей TIM motion-group.
+- [ ] Следующий практический шаг:
+    - [x] реализовать completion для `MOTOR_ROTATE` через счетчик STEP-событий текущего TIM1/TIM2 PWM path;
+    - [x] завершение делать внутренним событием MotionController, чтобы `DONE` отправлялся из task context, а не из ISR;
+    - [x] при `MOTOR_ROTATE` использовать `speed` из текущей команды, а не только сохраненный/default `max_speed_steps_per_sec`;
+    - [x] валидировать `speed` по локальным limits оси до запуска STEP;
+    - [x] проверять занятость timer motion-group, а не только `motor_id`;
+    - [x] хранить baseline runtime-state движения на уровне motion-group: active motor, target/current speed, target steps;
+    - [x] для ненулевого `steps` отклонять `speed=0` как invalid-param;
+    - [x] для `steps=0` оставлять быстрый `ACK -> DONE` без запуска PWM;
+    - [ ] `HOME` с реальным датчиком/condition оставить отдельным hardware-блоком, если нет подтвержденного home input.
+- [ ] После сборки прошивки выполнить no-load CAN regression: `ROTATE` должен дать `ACK`, затем самостоятельный `DONE` без штатного `STOP`.
+- [ ] В no-load regression проверить `START_CONTINUOUS speed>0 -> ACK + DONE`, занятость TIM-группы и штатный выход через `MOTOR_STOP -> ACK + DONE`.
+- [ ] После no-load regression переходить к физическим тестам STEP/EN на измерительном оборудовании и затем с мотором.
+
+#### F. Координация Fluidics / Conductor по `DONE` и насосам
+
+- [x] Зафиксировать единый смысл `DONE`: команда завершена по своему контракту, а не "устройство только стартовало".
+- [x] Зафиксировать целевую модель насосов: объем Host-команды переводится Дирижером в `duration_ms`, затем Fluidics Executor выполняет `PUMP_RUN_DURATION` локально и отправляет `DONE` только после выключения насоса.
+- [x] Подготовить документационное послание:
+    - [x] Fluidics Executor: изменить логику `PUMP_RUN_DURATION`, `DONE` после штатного выключения по `duration_ms`;
+    - [x] Conductor: заменить recipe-дозирование `START_PUMP + WAIT_MS + STOP_PUMP` на `PUMP_RUN_DURATION(duration_ms)`.
+- [ ] После закрытия текущих корректировок Motion передать изменения в проект Fluidics.
+- [ ] После закрытия текущих корректировок Motion передать изменения в проект Conductor packer/job_manager/recipe_store.
+- [ ] Для Conductor добавить калибровочную функцию `volume_ul -> duration_ms` и policy ошибок при неизвестной калибровке.
+- [ ] Для Fluidics проверить стендово: `PUMP_RUN_DURATION`, `duration=0`, `DEVICE_BUSY`, fault path без `DONE`.
+
+#### G. Перспективное развитие Motion после текущего industrial baseline
+
+- [ ] DDA/TIM3 рассматривать как отдельный roadmap-блок, не как обязательное условие текущего промышленного доведения.
+- [ ] Возвращаться к DDA/TIM3 только при подтвержденной технологической необходимости:
+    - [ ] независимые скорости нескольких осей на одном таймерном ресурсе;
+    - [ ] более сложные профили движения, чем локальный acceleration profile текущего PWM path;
+    - [ ] централизованный software step scheduler;
+    - [ ] расширенная координация нескольких осей.
+- [ ] При проектировании DDA/TIM3 не менять текущий low-level контракт `MOTOR_ROTATE(steps, speed) -> DONE`, если функционально не требуется новая версия команды.
+
+#### H. Точка входа на 27.04.2026
+
+- [x] Точка остановки 24.04.2026 зафиксирована:
+    - [x] `MOTOR_ROTATE` кодово переведен на finite STEP completion;
+    - [x] `MOTOR_START_CONTINUOUS speed>0` кодово переведен в state-команду входа в continuous PWM mode;
+    - [x] command `speed` применяется и валидируется;
+    - [x] TIM resource model реализован как две группы: `TIM1 motors 0..3`, `TIM2 motors 4..7`;
+    - [x] сборка проходит: `text=47736`, `data=256`, `bss=14640`.
+- [ ] Первый блок понедельника - no-load CAN regression текущей прошивки:
+    - [ ] `F001 GET_DEVICE_INFO`;
+    - [ ] `F007 GET_STATUS`;
+    - [ ] `MOTOR_ROTATE small steps, valid speed`: ожидать `ACK -> DONE` без `STOP`;
+    - [ ] `MOTOR_ROTATE steps != 0, speed=0`: ожидать `ACK -> NACK(CAN_ERR_INVALID_PARAM)`;
+    - [ ] `MOTOR_BUSY` внутри `TIM1 group`;
+    - [ ] `MOTOR_BUSY` внутри `TIM2 group`, если есть смысл проверять оба таймера;
+    - [ ] параллельный запуск на разных группах, если no-load стенд позволяет;
+    - [ ] `START_CONTINUOUS speed>0 -> ACK + DONE`, затем `MOTOR_STOP -> ACK + DONE`.
+- [ ] Второй блок понедельника - измерение STEP/EN без механической нагрузки:
+    - [ ] количество STEP равно `abs(steps)`;
+    - [ ] после completion STEP остановлен;
+    - [ ] EN переведен в idle/disabled;
+    - [ ] `DONE` появляется после остановки STEP, а не сразу после старта.
+- [ ] Третий блок после измерения - решение, можно ли переходить к мотору под нагрузкой или нужен фикс finite counting/IRQ.
 
 ### 11.4. Что не делать первым
 
 - [ ] Не начинать с физической нагрузки до safe-state и понятной политики остановки.
-- [ ] Не добавлять watchdog до safe-state hook.
-- [ ] Не переделывать `ROTATE/HOME` без решения по генерации STEP и `DONE`.
+- [x] Не добавлять watchdog до подтвержденной регрессии safe-state hook: выполнено ранее.
+- [x] Не переделывать `ROTATE/HOME` без решения по генерации STEP и `DONE`: решение принято, `ROTATE` реализован, `HOME` оставлен отдельно.
+- [ ] Не привязывать текущую приемку `MOTOR_ROTATE -> DONE` к переходу на DDA/TIM3.
 - [ ] Не подключать `dds240_global_config.h` напрямую в проект механически; сначала выполнить diff-аудит и переносить только общие значения.
 - [ ] Не считать старые разделы плана выше текущим чеклистом без сверки с разделами `10` и `11`.

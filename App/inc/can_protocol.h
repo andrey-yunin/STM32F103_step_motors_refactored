@@ -55,6 +55,7 @@
 #define CAN_CMD_SRV_GET_UID             0xF004  // Получить Unique ID (3 пакета)
 #define CAN_CMD_SRV_SET_NODE_ID         0xF005  // Установить новый CAN NodeID
 #define CAN_CMD_SRV_FACTORY_RESET       0xF006  // Сброс к заводским настройкам
+#define CAN_CMD_SRV_GET_STATUS          0xF007  // Получить диагностический статус
 
 // Магический ключ для опасных операций
 #define SRV_MAGIC_REBOOT                0x55AA  // Ключ для перезагрузки
@@ -86,6 +87,29 @@
 #define CAN_ERR_MOTOR_BUSY          0x0003
 #define CAN_ERR_INVALID_KEY         0x0004
 #define CAN_ERR_FLASH_WRITE         0x0005
+#define CAN_ERR_INVALID_PARAM       0x0006
+
+// ============================================================
+// Метрики GET_STATUS (0xF007): metric_id:uint16 LE + value:uint32 LE
+// ============================================================
+#define CAN_STATUS_RX_TOTAL             0x0001
+#define CAN_STATUS_TX_TOTAL             0x0002
+#define CAN_STATUS_RX_QUEUE_OVERFLOW    0x0003
+#define CAN_STATUS_TX_QUEUE_OVERFLOW    0x0004
+#define CAN_STATUS_DISPATCHER_OVERFLOW  0x0005
+#define CAN_STATUS_DROP_NOT_EXT         0x0006
+#define CAN_STATUS_DROP_WRONG_DST       0x0007
+#define CAN_STATUS_DROP_WRONG_TYPE      0x0008
+#define CAN_STATUS_DROP_WRONG_DLC       0x0009
+#define CAN_STATUS_TX_MAILBOX_TIMEOUT   0x000A
+#define CAN_STATUS_TX_HAL_ERROR         0x000B
+#define CAN_STATUS_ERROR_CALLBACK       0x000C
+#define CAN_STATUS_ERROR_WARNING        0x000D
+#define CAN_STATUS_ERROR_PASSIVE        0x000E
+#define CAN_STATUS_BUS_OFF              0x000F
+#define CAN_STATUS_LAST_HAL_ERROR       0x0010
+#define CAN_STATUS_LAST_ESR             0x0011
+#define CAN_STATUS_APP_QUEUE_OVERFLOW   0x0012
 
 // ============================================================
 // Прототипы функций ответов (реализованы в task_can_handler.c)
