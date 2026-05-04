@@ -1693,3 +1693,925 @@ text=47736 data=256 bss=14640
 - `readme/Commands_API/CAN_Protocol/7_Full_CAN_Frame_Mapping.md`;
 - `readme/executor_architecture_guide.md`;
 - `readme/refactoring_plan.md`.
+
+### 11.8. Возобновление работы 29.04.2026
+
+29.04.2026 выполнена повторная сверка документации, git-состояния и текущего кода Motion Executor.
+
+Подтверждено:
+
+- рабочее дерево перед документационной фиксацией было чистым;
+- последняя кодовая точка - `Refactor: implement finite Motion command completion`;
+- `MOTOR_ROTATE -> DONE` уже реализован кодово как baseline finite completion на TIM1/TIM2 PWM path;
+- `MotionDriver_StartFinite()` запускает PWM в interrupt mode и хранит счетчик оставшихся STEP;
+- `HAL_TIM_PWM_PulseFinishedCallback()` уменьшает счетчик, на нуле останавливает PWM/STEP, переводит EN в idle и выставляет внутренний completion flag;
+- `MotionController` потребляет completion flag, обновляет `current_position`, `steps_to_go`, active-state и отправляет low-level `DONE` из task context;
+- `TIM1_CC_IRQHandler` и `TIM2_IRQHandler` подключены к `HAL_TIM_IRQHandler`, NVIC для них включен;
+- `MOTOR_HOME` с настоящим home-condition по-прежнему не закрыт и не должен считаться реализованным как полноценный HOME.
+
+Сборка 29.04.2026:
+
+```text
+PATH=/home/andrey/st/stm32cubeide_1.19.0/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.linux64_1.0.0.202410170706/tools/bin:$PATH make -C Debug -j4 all
+Result: PASS
+text=47736 data=256 bss=14640 total=62632
+```
+
+Следующая фактическая работа - стендовая no-load CAN regression. Для default Motion NodeID `0x20`, Conductor `0x10`, command CAN ID `0x00201000`:
+
+```text
+F001 GET_DEVICE_INFO:
+cansend can0 00201000#01F0000000000000
+
+F007 GET_STATUS:
+cansend can0 00201000#07F0000000000000
+
+MOTOR_ROTATE motor0, steps=100, speed=100 steps/s:
+cansend can0 00201000#0101006400000019
+Expected: ACK, затем самостоятельный DONE без STOP.
+
+MOTOR_ROTATE motor0, steps=100, speed=0:
+cansend can0 00201000#0101006400000000
+Expected: ACK + NACK(CAN_ERR_INVALID_PARAM).
+
+MOTOR_BUSY TIM1 group:
+cansend can0 00201000#010100D007000019
+cansend can0 00201000#0101016400000019
+Expected: первая команда ACK, вторая ACK + NACK(CAN_ERR_MOTOR_BUSY).
+
+MOTOR_BUSY TIM2 group:
+cansend can0 00201000#010104D007000019
+cansend can0 00201000#0101056400000019
+Expected: первая команда ACK, вторая ACK + NACK(CAN_ERR_MOTOR_BUSY).
+
+START_CONTINUOUS motor0, speed=1000 steps/s:
+cansend can0 00201000#0301000A00000000
+Expected: ACK + DONE, группа TIM1 остается занята до STOP.
+
+STOP motor0:
+cansend can0 00201000#0401000000000000
+Expected: ACK + DONE.
+```
+
+Ожидаемые response IDs при default NodeID `0x20`:
+
+- `ACK`: `0x05102000`;
+- `NACK`: `0x06102000`;
+- `DATA/DONE`: `0x07102000`.
+
+В sandbox не удалось прочитать состояние SocketCAN-интерфейсов командой `ip -details link show type can` из-за ограничения netlink. Наличие `cansend` и `candump` в системе подтверждено, но подключение `can0` и физическая плата должны быть проверены уже на стенде.
+
+### 11.9. Сверка с общей экосистемой DDS-240
+
+29.04.2026 дополнительно сверены общие правила DDS-240 с текущей реализацией Motion Executor.
+
+Канонические источники для дальнейшей работы:
+
+- `readme/DDS-240_eko_system/DDS-240_ECOSYSTEM_STANDARD.md`;
+- `readme/DDS-240_eko_system/dds240_global_config.h`;
+- `readme/DDS-240_eko_system/EXECUTOR_INDUSTRIALIZATION_PLAYBOOK.md`;
+- `readme/DDS-240_eko_system/CONDUCTOR_INTEGRATION_GUIDE.md`.
+
+`readme/executor_architecture_guide.md` считать историческим/поясняющим документом: если он расходится с ecosystem standard/playbook, приоритет у ecosystem standard.
+
+Совпадения Motion с ecosystem baseline:
+
+- CAN profile совпадает с reference: APB1 `32 MHz`, prescaler `2`, BS1 `11TQ`, BS2 `4TQ`, SJW `1TQ`, bitrate `1 Mbit/s`;
+- используется 29-bit Extended ID и strict `DLC=8`;
+- default NodeID `0x20`, DeviceType `0x01`, каналов `8`;
+- broadcast `DstAddr=0x00` принимается, чужой `DstAddr` отбрасывается без ответа;
+- транспортно невалидные кадры (`not ext`, wrong dst, wrong type, wrong DLC) не получают `ACK/NACK`;
+- `TransmitFifoPriority = ENABLE`, TX mailbox guard с таймаутом до `10 ms`;
+- service-команды `0xF001..0xF007` и `GET_STATUS` common metrics `0x0001..0x0012` реализованы;
+- NACK-коды по числам совпадают с common registry: `UNKNOWN_CMD=0x0001`, `INVALID_DEVICE_ID/INVALID_MOTOR_ID=0x0002`, `BUSY=0x0003`, `INVALID_KEY=0x0004`, `FLASH_WRITE=0x0005`, `INVALID_PARAM=0x0006`;
+- `MotionDriver_AllSafe()` вызывается при старте, в `Error_Handler()` и fault handlers;
+- IWDG обслуживается только watchdog supervisor-задачей после heartbeat критических задач;
+- finite/state семантика `DONE` для Motion синхронизирована: `MOTOR_ROTATE` должен завершаться сам по STEP counter, `START_CONTINUOUS` дает `DONE` после входа в режим, `STOP` является отдельной командой.
+
+Открытые ecosystem gaps перед полной промышленной приемкой:
+
+- `F002 REBOOT`, `F003 FLASH_COMMIT`, `F005 SET_NODE_ID`, `F006 FACTORY_RESET` реализованы, но для Motion еще не закрыты стендовым тестом;
+- CAN fault path и bus-off recovery policy пока не закрыты отдельным fault/stress тестом; текущая реализация фиксирует counters/status, но отдельная политика восстановления CAN-контроллера требует проверки/решения;
+- `AppConfig_Init()` создает `configMutex`, но не проверяет явный отказ `osMutexNew()` как критический RTOS resource;
+- в `app_config.h` остаются неиспользуемые старые константы `CAN_DEVICE_TYPE_MOTOR=0x20` и `CAN_DEVICE_TYPE_THERMO=0x40`; по смыслу это NodeID, а не DeviceType. Текущий `F001` использует правильный `CAN_DEVICE_TYPE_MOTION=0x01` из `can_protocol.h`, поэтому runtime-ошибки сейчас нет;
+- `dds240_global_config.h` содержит `DDS240_ECOSYSTEM_STANDARD_MINOR 3U`, тогда как `DDS-240_ECOSYSTEM_STANDARD.md` помечен версией `1.4`; это документационный drift, который нужно синхронизировать при следующей правке global config;
+- `executor_architecture_guide.md` содержит исторические формулировки, включая старую структуру parser/ACK и упоминание `7` моторов; использовать его без сверки с разделами `10..11` локального отчета и ecosystem standard нельзя.
+
+Вывод: текущий Motion остается согласован с ключевыми правилами DDS-240 для ближайшего шага `MOTOR_ROTATE -> DONE` no-load regression. Открытые пункты выше не блокируют проверку finite completion без нагрузки, но должны быть закрыты до заявления полной промышленной готовности Motion Executor.
+
+### 11.10. No-load CAN regression 29.04.2026
+
+Начат стендовый no-load regression текущей прошивки Motion после реализации finite `MOTOR_ROTATE -> DONE`.
+
+#### F001 GET_DEVICE_INFO
+
+Команда:
+
+```text
+cansend can0 00201000#01F0000000000000
+```
+
+Фактический результат:
+
+```text
+TX 00201000 [8] 01 F0 00 00 00 00 00 00
+RX 05102000 [8] 01 F0 00 00 00 00 00 00
+RX 07102000 [8] 02 80 01 01 00 08 0C 22
+RX 07102000 [8] 02 80 07 14 52 16 30 30
+RX 07102000 [8] 02 80 30 30 30 32 00 00
+RX 07102000 [8] 01 01 F0 00 00 00 00 00
+```
+
+Разбор RX:
+
+```text
+05102000 [8] 01 F0 00 00 00 00 00 00
+CAN ID: msg_type=ACK, dst=0x10 Conductor, src=0x20 Motion
+Payload: cmd_code=0xF001, padding=0
+
+07102000 [8] 02 80 01 01 00 08 0C 22
+CAN ID: msg_type=DATA_DONE_LOG, dst=0x10, src=0x20
+Payload: DATA subtype=0x02, seq/EOT=0x80, device_type=0x01 Motion, fw_major=0x01, fw_minor=0x00, channel_count=8, UID[0..1]=0C 22
+
+07102000 [8] 02 80 07 14 52 16 30 30
+Payload: DATA subtype=0x02, seq/EOT=0x80, UID continuation = 07 14 52 16 30 30
+
+07102000 [8] 02 80 30 30 30 32 00 00
+Payload: DATA subtype=0x02, seq/EOT=0x80, UID continuation = 30 30 30 32, padding=00 00
+
+07102000 [8] 01 01 F0 00 00 00 00 00
+Payload: DONE subtype=0x01, cmd_code=0xF001, device/status=0, padding=0
+```
+
+Оценка: PASS. Получен корректный цикл `ACK -> 3 DATA -> DONE`, `DONE` пришел последним. Ответ подтверждает `device_type=0x01`, FW `1.0`, `channel_count=8`, UID `0C 22 07 14 52 16 30 30 30 30 30 32`.
+
+#### F007 GET_STATUS
+
+Команда:
+
+```text
+cansend can0 00201000#07F0000000000000
+```
+
+Фактический результат:
+
+```text
+TX 00201000 [8] 07 F0 00 00 00 00 00 00
+RX 05102000 [8] 07 F0 00 00 00 00 00 00
+RX 07102000 [8] 02 80 01 00 02 00 00 00
+RX 07102000 [8] 02 80 02 00 06 00 00 00
+RX 07102000 [8] 02 80 03 00 00 00 00 00
+RX 07102000 [8] 02 80 04 00 00 00 00 00
+RX 07102000 [8] 02 80 05 00 00 00 00 00
+RX 07102000 [8] 02 80 06 00 00 00 00 00
+RX 07102000 [8] 02 80 07 00 00 00 00 00
+RX 07102000 [8] 02 80 08 00 00 00 00 00
+RX 07102000 [8] 02 80 09 00 00 00 00 00
+RX 07102000 [8] 02 80 0A 00 00 00 00 00
+RX 07102000 [8] 02 80 0B 00 00 00 00 00
+RX 07102000 [8] 02 80 0C 00 00 00 00 00
+RX 07102000 [8] 02 80 0D 00 00 00 00 00
+RX 07102000 [8] 02 80 0E 00 00 00 00 00
+RX 07102000 [8] 02 80 0F 00 00 00 00 00
+RX 07102000 [8] 02 80 10 00 00 00 00 00
+RX 07102000 [8] 02 80 11 00 00 00 00 00
+RX 07102000 [8] 02 80 12 00 00 00 00 00
+RX 07102000 [8] 01 07 F0 00 00 00 00 00
+```
+
+Разбор RX:
+
+```text
+05102000 [8] 07 F0 00 00 00 00 00 00
+CAN ID: msg_type=ACK, dst=0x10 Conductor, src=0x20 Motion
+Payload: cmd_code=0xF007, padding=0
+
+07102000 [8] 02 80 01 00 02 00 00 00 -> metric_id=0x0001 RX_TOTAL = 2
+07102000 [8] 02 80 02 00 06 00 00 00 -> metric_id=0x0002 TX_TOTAL = 6
+07102000 [8] 02 80 03 00 00 00 00 00 -> metric_id=0x0003 RX_QUEUE_OVERFLOW = 0
+07102000 [8] 02 80 04 00 00 00 00 00 -> metric_id=0x0004 TX_QUEUE_OVERFLOW = 0
+07102000 [8] 02 80 05 00 00 00 00 00 -> metric_id=0x0005 DISPATCHER_OVERFLOW = 0
+07102000 [8] 02 80 06 00 00 00 00 00 -> metric_id=0x0006 DROP_NOT_EXT = 0
+07102000 [8] 02 80 07 00 00 00 00 00 -> metric_id=0x0007 DROP_WRONG_DST = 0
+07102000 [8] 02 80 08 00 00 00 00 00 -> metric_id=0x0008 DROP_WRONG_TYPE = 0
+07102000 [8] 02 80 09 00 00 00 00 00 -> metric_id=0x0009 DROP_WRONG_DLC = 0
+07102000 [8] 02 80 0A 00 00 00 00 00 -> metric_id=0x000A TX_MAILBOX_TIMEOUT = 0
+07102000 [8] 02 80 0B 00 00 00 00 00 -> metric_id=0x000B TX_HAL_ERROR = 0
+07102000 [8] 02 80 0C 00 00 00 00 00 -> metric_id=0x000C CAN_ERROR_CALLBACK = 0
+07102000 [8] 02 80 0D 00 00 00 00 00 -> metric_id=0x000D ERROR_WARNING = 0
+07102000 [8] 02 80 0E 00 00 00 00 00 -> metric_id=0x000E ERROR_PASSIVE = 0
+07102000 [8] 02 80 0F 00 00 00 00 00 -> metric_id=0x000F BUS_OFF = 0
+07102000 [8] 02 80 10 00 00 00 00 00 -> metric_id=0x0010 LAST_HAL_ERROR = 0
+07102000 [8] 02 80 11 00 00 00 00 00 -> metric_id=0x0011 LAST_ESR = 0
+07102000 [8] 02 80 12 00 00 00 00 00 -> metric_id=0x0012 APP_QUEUE_OVERFLOW = 0
+
+07102000 [8] 01 07 F0 00 00 00 00 00
+Payload: DONE subtype=0x01, cmd_code=0xF007, device/status=0, padding=0
+```
+
+Формат одного DATA metric:
+
+```text
+02          DATA subtype
+80          seq/EOT
+metric_lo   metric_id uint16 LE
+metric_hi
+value_0..3  value uint32 LE
+```
+
+Оценка: PASS. Получен корректный цикл `ACK -> 18 DATA metrics -> DONE`, `DONE` пришел последним. Диагностический снимок чистый: `RX_TOTAL=2`, `TX_TOTAL=6`, все queue overflow, transport drop и CAN fault counters равны `0`.
+
+#### MOTOR_ROTATE motor0, steps=100, speed=100 steps/s
+
+Команда:
+
+```text
+cansend can0 00201000#0101006400000019
+```
+
+Фактический результат:
+
+```text
+TX 00201000 [8] 01 01 00 64 00 00 00 19
+RX 05102000 [8] 01 01 00 00 00 00 00 00
+```
+
+Разбор RX:
+
+```text
+05102000 [8] 01 01 00 00 00 00 00 00
+CAN ID: msg_type=ACK, dst=0x10 Conductor, src=0x20 Motion
+Payload: cmd_code=0x0101 MOTOR_ROTATE, padding=0
+```
+
+Разбор TX-команды:
+
+```text
+01 01       cmd_code = 0x0101 MOTOR_ROTATE
+00          motor_id = 0
+64 00 00 00 steps = 100
+19          speed_packed = 25, real speed = 100 steps/s
+```
+
+Оценка: FAIL для finite completion. Команда принята (`ACK`), но самостоятельный `DONE` для `MOTOR_ROTATE` не пришел до ручной остановки. При `steps=100` и `speed=100 steps/s` ожидаемое время движения около `1 s`; фактически до команды `STOP` прошло около `79 s`.
+
+Предварительный вывод: стенд подтверждает, что текущая прошитая плата не закрыла runtime-путь `MOTOR_ROTATE -> STEP counter completion -> DONE`. Нужно отдельно проверить, что на плате прошита сборка с коммитом `Refactor: implement finite Motion command completion`; если да, следующий подозреваемый блок - TIM1/TIM2 PWM interrupt completion path.
+
+#### STOP motor0 после зависшего ROTATE
+
+Команда:
+
+```text
+cansend can0 00201000#0401000000000000
+```
+
+Фактический результат:
+
+```text
+TX 00201000 [8] 04 01 00 00 00 00 00 00
+RX 05102000 [8] 04 01 00 00 00 00 00 00
+RX 07102000 [8] 01 04 01 00 00 00 00 00
+```
+
+Разбор RX:
+
+```text
+05102000 [8] 04 01 00 00 00 00 00 00
+CAN ID: msg_type=ACK, dst=0x10 Conductor, src=0x20 Motion
+Payload: cmd_code=0x0104 MOTOR_STOP, padding=0
+
+07102000 [8] 01 04 01 00 00 00 00 00
+CAN ID: msg_type=DATA_DONE_LOG, dst=0x10, src=0x20
+Payload: DONE subtype=0x01, cmd_code=0x0104 MOTOR_STOP, device_id=0, padding=0
+```
+
+Оценка: PASS. `MOTOR_STOP` штатно остановил/сбросил active-state и вернул `DONE`. Это подтверждает, что CAN task, dispatcher, motion queue и STOP path живы; отказ локализуется не в общем CAN response path, а в completion path finite `ROTATE`.
+
+#### MOTOR_ROTATE motor0, steps=100, speed=0
+
+Команда:
+
+```text
+cansend can0 00201000#0101006400000000
+```
+
+Фактический результат:
+
+```text
+TX 00201000 [8] 01 01 00 64 00 00 00 00
+RX 05102000 [8] 01 01 00 00 00 00 00 00
+```
+
+Разбор RX:
+
+```text
+05102000 [8] 01 01 00 00 00 00 00 00
+CAN ID: msg_type=ACK, dst=0x10 Conductor, src=0x20 Motion
+Payload: cmd_code=0x0101 MOTOR_ROTATE, padding=0
+```
+
+Разбор TX-команды:
+
+```text
+01 01       cmd_code = 0x0101 MOTOR_ROTATE
+00          motor_id = 0
+64 00 00 00 steps = 100
+00          speed_packed = 0, real speed = 0 steps/s
+```
+
+Оценка: FAIL. Для ненулевых `steps` скорость `0` должна быть отклонена как `NACK INVALID_PARAM`, но в наблюдаемом окне пришел только `ACK`. Это еще один признак того, что текущая прошивка на плате не соответствует ожидаемому runtime-поведению finite Motion baseline или что выполнение уходит в незакрытый path до проверки `speed`.
+
+#### F007 GET_STATUS после ROTATE FAIL и STOP recovery
+
+Команда:
+
+```text
+cansend can0 00201000#07F0000000000000
+```
+
+Фактический результат:
+
+```text
+TX 00201000 [8] 07 F0 00 00 00 00 00 00
+RX 05102000 [8] 07 F0 00 00 00 00 00 00
+RX 07102000 [8] 02 80 01 00 03 00 00 00
+RX 07102000 [8] 02 80 02 00 17 00 00 00
+RX 07102000 [8] 02 80 03 00 00 00 00 00
+RX 07102000 [8] 02 80 04 00 00 00 00 00
+RX 07102000 [8] 02 80 05 00 00 00 00 00
+RX 07102000 [8] 02 80 06 00 00 00 00 00
+RX 07102000 [8] 02 80 07 00 00 00 00 00
+RX 07102000 [8] 02 80 08 00 00 00 00 00
+RX 07102000 [8] 02 80 09 00 00 00 00 00
+RX 07102000 [8] 02 80 0A 00 00 00 00 00
+RX 07102000 [8] 02 80 0B 00 00 00 00 00
+RX 07102000 [8] 02 80 0C 00 00 00 00 00
+RX 07102000 [8] 02 80 0D 00 00 00 00 00
+RX 07102000 [8] 02 80 0E 00 00 00 00 00
+RX 07102000 [8] 02 80 0F 00 00 00 00 00
+RX 07102000 [8] 02 80 10 00 00 00 00 00
+RX 07102000 [8] 02 80 11 00 00 00 00 00
+RX 07102000 [8] 02 80 12 00 00 00 00 00
+RX 07102000 [8] 01 07 F0 00 00 00 00 00
+```
+
+Разбор RX:
+
+```text
+05102000 [8] 07 F0 00 00 00 00 00 00
+CAN ID: msg_type=ACK, dst=0x10 Conductor, src=0x20 Motion
+Payload: cmd_code=0xF007, padding=0
+
+07102000 [8] 02 80 01 00 03 00 00 00 -> metric_id=0x0001 RX_TOTAL = 3
+07102000 [8] 02 80 02 00 17 00 00 00 -> metric_id=0x0002 TX_TOTAL = 23
+07102000 [8] 02 80 03 00 00 00 00 00 -> metric_id=0x0003 RX_QUEUE_OVERFLOW = 0
+07102000 [8] 02 80 04 00 00 00 00 00 -> metric_id=0x0004 TX_QUEUE_OVERFLOW = 0
+07102000 [8] 02 80 05 00 00 00 00 00 -> metric_id=0x0005 DISPATCHER_OVERFLOW = 0
+07102000 [8] 02 80 06 00 00 00 00 00 -> metric_id=0x0006 DROP_NOT_EXT = 0
+07102000 [8] 02 80 07 00 00 00 00 00 -> metric_id=0x0007 DROP_WRONG_DST = 0
+07102000 [8] 02 80 08 00 00 00 00 00 -> metric_id=0x0008 DROP_WRONG_TYPE = 0
+07102000 [8] 02 80 09 00 00 00 00 00 -> metric_id=0x0009 DROP_WRONG_DLC = 0
+07102000 [8] 02 80 0A 00 00 00 00 00 -> metric_id=0x000A TX_MAILBOX_TIMEOUT = 0
+07102000 [8] 02 80 0B 00 00 00 00 00 -> metric_id=0x000B TX_HAL_ERROR = 0
+07102000 [8] 02 80 0C 00 00 00 00 00 -> metric_id=0x000C CAN_ERROR_CALLBACK = 0
+07102000 [8] 02 80 0D 00 00 00 00 00 -> metric_id=0x000D ERROR_WARNING = 0
+07102000 [8] 02 80 0E 00 00 00 00 00 -> metric_id=0x000E ERROR_PASSIVE = 0
+07102000 [8] 02 80 0F 00 00 00 00 00 -> metric_id=0x000F BUS_OFF = 0
+07102000 [8] 02 80 10 00 00 00 00 00 -> metric_id=0x0010 LAST_HAL_ERROR = 0
+07102000 [8] 02 80 11 00 00 00 00 00 -> metric_id=0x0011 LAST_ESR = 0
+07102000 [8] 02 80 12 00 00 00 00 00 -> metric_id=0x0012 APP_QUEUE_OVERFLOW = 0
+
+07102000 [8] 01 07 F0 00 00 00 00 00
+Payload: DONE subtype=0x01, cmd_code=0xF007, device/status=0, padding=0
+```
+
+Оценка: PASS для diagnostics after-failure. После `ROTATE` без `DONE` и последующего `STOP` транспорт остается чистым: queue overflow, transport drops и CAN fault counters равны `0`. Это усиливает вывод, что проблема находится в finite motion completion path, а не в CAN transport/dispatcher overload.
+
+### 11.11. No-load CAN regression после перепрошивки 04.05.2026
+
+04.05.2026 выполнен повторный no-load CAN regression после аудита проекта и перепрошивки платы текущим build.
+
+Перед перепрошивкой проведен аудит проекта:
+
+- кодовая часть рабочего дерева чистая, изменения есть только в документации `readme/project_report.md` и `readme/refactoring_plan.md`;
+- текущая кодовая точка: `cfe6b39 Refactor: implement finite Motion command completion`;
+- сборка проходит:
+
+```text
+text=47736 data=256 bss=14640 total=62632
+```
+
+- в ELF присутствуют `MotionDriver_StartFinite`, `MotionController_IsGroupBusy`, `MotionController_IsSpeedValid`, `HAL_TIM_PWM_PulseFinishedCallback`, `TIM1_CC_IRQHandler`, `TIM2_IRQHandler`;
+- локальный код содержит group-lock для `TIM1 motors 0..3` и `TIM2 motors 4..7`;
+- `speed=0` при ненулевом `MOTOR_ROTATE.steps` должен отклоняться как `CAN_ERR_INVALID_PARAM`;
+- CAN профиль соответствует DDS-240: `1 Mbit/s`, Extended ID, strict `DLC=8`, `TransmitFifoPriority=ENABLE`.
+
+Вывод аудита: кодовая часть соответствует ожидаемому industrial baseline; стендовые `FAIL` от 29.04.2026 объясняются тем, что на плате была неактуальная прошивка или прошивка не соответствовала текущему build.
+
+#### Fingerprint: MOTOR_ROTATE steps=100, speed=0
+
+Команда:
+
+```text
+cansend can0 00201000#0101006400000000
+```
+
+Фактический результат:
+
+```text
+TX 00201000 [8] 01 01 00 64 00 00 00 00
+RX 05102000 [8] 01 01 00 00 00 00 00 00
+RX 06102000 [8] 01 01 06 00 00 00 00 00
+```
+
+Оценка: PASS. Получен `ACK -> NACK(CAN_ERR_INVALID_PARAM=0x0006)`. Это подтверждает, что на плате работает актуальная прошивка с валидацией `speed=0`.
+
+#### MOTOR_BUSY TIM1 group
+
+Команды:
+
+```text
+cansend can0 00201000#0401000000000000
+cansend can0 00201000#0101001027000019
+cansend can0 00201000#0101016400000019
+cansend can0 00201000#0401000000000000
+```
+
+Фактический результат ключевого участка:
+
+```text
+TX 00201000 [8] 01 01 00 10 27 00 00 19
+RX 05102000 [8] 01 01 00 00 00 00 00 00
+TX 00201000 [8] 01 01 01 64 00 00 00 19
+RX 05102000 [8] 01 01 00 00 00 00 00 00
+RX 06102000 [8] 01 01 03 00 00 00 00 00
+```
+
+Разбор: первая команда запускает `ROTATE motor0`, вторая команда пытается запустить `ROTATE motor1` в той же `TIM1 group`. Ответ на вторую команду - `ACK -> NACK(CAN_ERR_MOTOR_BUSY=0x0003)`.
+
+Оценка: PASS. Group-lock для `TIM1 motors 0..3` работает.
+
+#### MOTOR_BUSY TIM2 group
+
+Команды:
+
+```text
+cansend can0 00201000#0101041027000019
+cansend can0 00201000#0101056400000019
+cansend can0 00201000#0401040000000000
+```
+
+Фактический результат ключевого участка:
+
+```text
+TX 00201000 [8] 01 01 04 10 27 00 00 19
+RX 05102000 [8] 01 01 00 00 00 00 00 00
+TX 00201000 [8] 01 01 05 64 00 00 00 19
+RX 05102000 [8] 01 01 00 00 00 00 00 00
+RX 06102000 [8] 01 01 03 00 00 00 00 00
+```
+
+Оценка: PASS. Group-lock для `TIM2 motors 4..7` работает.
+
+#### START_CONTINUOUS motor0, затем STOP
+
+Команды:
+
+```text
+cansend can0 00201000#0301000A00000000
+cansend can0 00201000#0401000000000000
+```
+
+Фактический результат:
+
+```text
+TX 00201000 [8] 03 01 00 0A 00 00 00 00
+RX 05102000 [8] 03 01 00 00 00 00 00 00
+RX 07102000 [8] 01 03 01 00 00 00 00 00
+
+TX 00201000 [8] 04 01 00 00 00 00 00 00
+RX 05102000 [8] 04 01 00 00 00 00 00 00
+RX 07102000 [8] 01 04 01 00 00 00 00 00
+```
+
+Оценка: PASS. `START_CONTINUOUS motor0 speed=1000 sps` дает `ACK -> DONE`, `STOP motor0` штатно завершает continuous state через `ACK -> DONE`.
+
+#### MOTOR_ROTATE finite completion
+
+Команда:
+
+```text
+cansend can0 00201000#0101006400000019
+```
+
+Фактический результат:
+
+```text
+TX 00201000 [8] 01 01 00 64 00 00 00 19
+RX 05102000 [8] 01 01 00 00 00 00 00 00
+RX 07102000 [8] 01 01 01 00 00 00 00 00
+```
+
+Время между `ACK` и `DONE` около `0.99 s`, что соответствует `100 steps / 100 steps/s`.
+
+Оценка: PASS. `MOTOR_ROTATE` завершился самостоятельным `DONE` без штатного `STOP`.
+
+#### F007 GET_STATUS после no-load regression
+
+Команда:
+
+```text
+cansend can0 00201000#07F0000000000000
+```
+
+Фактический диагностический снимок:
+
+```text
+RX_TOTAL = 12
+TX_TOTAL = 21
+RX_QUEUE_OVERFLOW = 0
+TX_QUEUE_OVERFLOW = 0
+DISPATCHER_OVERFLOW = 0
+DROP_NOT_EXT = 0
+DROP_WRONG_DST = 0
+DROP_WRONG_TYPE = 0
+DROP_WRONG_DLC = 0
+TX_MAILBOX_TIMEOUT = 0
+TX_HAL_ERROR = 0
+CAN_ERROR_CALLBACK = 0
+ERROR_WARNING = 0
+ERROR_PASSIVE = 0
+BUS_OFF = 0
+LAST_HAL_ERROR = 0
+LAST_ESR = 0
+APP_QUEUE_OVERFLOW = 0
+```
+
+Оценка: PASS. Порядок ответа `ACK -> 18 DATA metrics -> DONE`, `DONE` последний. Queue overflow, transport drops и CAN fault counters равны `0`.
+
+Итог 04.05.2026: no-load CAN regression Motion после перепрошивки закрыт. Следующий этап - измерение STEP/EN без механической нагрузки: подтвердить количество STEP, остановку STEP после completion, перевод EN в idle и то, что `DONE` появляется после остановки STEP, а не сразу после старта.
+
+### 11.12. План измерения STEP/EN без нагрузки
+
+04.05.2026 принято решение отложить физическое измерение STEP/EN до подготовки измерительного оборудования. Кодовые изменения для этого этапа не требуются: текущая задача - подтвердить электрические сигналы уже проверенной no-load CAN-логики.
+
+Цель теста:
+
+- подтвердить, что `MOTOR_ROTATE(steps=100, speed=100 sps)` выдает около 100 STEP-импульсов;
+- подтвердить частоту STEP около `100 Hz` и длительность пачки около `1 s`;
+- подтвердить, что после completion STEP останавливается;
+- подтвердить, что EN переводится в idle/disabled после completion;
+- подтвердить, что CAN `DONE` появляется после завершения STEP-пачки, а не сразу после старта.
+
+Проверочная команда:
+
+```text
+cansend can0 00201000#0101006400000019
+```
+
+Разбор команды:
+
+```text
+cmd_code = 0x0101 MOTOR_ROTATE
+motor_id = 0
+steps = 0x00000064 = 100
+speed_packed = 0x19 = 25
+speed = 25 << 2 = 100 steps/s
+```
+
+Ожидаемый CAN-результат:
+
+```text
+ACK сразу после приема команды
+DONE примерно через 1 s
+```
+
+#### Вариант A: USB logic analyzer + PulseView/sigrok
+
+Минимальное оборудование:
+
+- USB logic analyzer 8ch 24MHz, например FX2LA/CY7C68013A-compatible;
+- провода Dupont или hook clips;
+- ПК с PulseView/sigrok;
+- подключенный CAN-адаптер для отправки команд.
+
+Схема подключения для `motor0`:
+
+```text
+Logic Analyzer GND -> GND платы
+CH0                -> PA8  STEP motor0 / TIM1_CH1
+CH1                -> PA4  EN motor0
+CH2                -> PB0  DIR motor0, опционально
+```
+
+Рекомендуемые настройки PulseView:
+
+```text
+Sample rate: 1 MHz для 100 Hz теста
+Capture length: 2-5 s
+Trigger: rising edge on CH0 / STEP
+Channels: CH0 STEP, CH1 EN, CH2 DIR
+```
+
+Для будущих проверок высоких скоростей до `20 kHz` частоту дискретизации поднять до `1-5 MHz` минимум; 24MHz анализатора достаточно для базовой проверки.
+
+Ожидаемая осциллограмма:
+
+```text
+STEP PA8: пачка около 100 импульсов, частота около 100 Hz, длительность около 1 s
+EN PA4: active во время движения, затем idle/disabled
+DIR PB0: фиксированный уровень на время движения
+```
+
+Ограничения logic analyzer:
+
+- он показывает цифровые уровни и количество импульсов, но не дает полноценной картины формы фронтов;
+- нельзя подключать к силовым цепям двигателя, VMOT, фазам мотора или 12/24V линиям;
+- общий GND с платой обязателен.
+
+#### Вариант B: осциллограф
+
+Осциллограф допустим и полезен для проверки формы сигнала, реальных уровней и фронтов.
+
+Подключение для `motor0`:
+
+```text
+GND щупа -> GND платы
+CH1      -> PA8  STEP motor0 / TIM1_CH1
+CH2      -> PA4  EN motor0
+CH3      -> PB0  DIR motor0, если доступен третий канал
+```
+
+Рекомендуемые настройки для всей пачки:
+
+```text
+Probe: x10, если щуп поддерживает
+Coupling: DC
+Vertical: 1 V/div или 2 V/div
+Timebase: 100 ms/div
+Trigger: rising edge on STEP
+Trigger level: около 1.5 V
+```
+
+Рекомендуемые настройки для формы одного импульса:
+
+```text
+Timebase: 1-2 ms/div для периода 100 Hz
+или 10-50 us/div для оценки фронтов
+```
+
+Критическое ограничение осциллографа: земля щупа обычно связана с защитным PE/землей сети. Подключать `GND` щупа только к `GND` платы. Не подключать землю щупа к VMOT, фазам мотора, CAN-H/CAN-L или другим силовым/дифференциальным линиям.
+
+#### Статус
+
+На 04.05.2026 этот тест отложен до подготовки оборудования. Переход к механической нагрузке выполнять только после успешного измерения STEP/EN без нагрузки.
+
+### 11.13. Service commands regression 04.05.2026
+
+После закрытия no-load CAN regression выполнен стендовый service-command блок Motion Executor: `F002 REBOOT`, `F003 FLASH_COMMIT`, `F005 SET_NODE_ID`, `F006 FACTORY_RESET`, затем контрольный `F007 GET_STATUS`.
+
+#### F002 REBOOT
+
+Неверный ключ:
+
+```text
+cansend can0 00201000#02F0000000000000
+
+TX 00201000 [8] 02 F0 00 00 00 00 00 00
+RX 05102000 [8] 02 F0 00 00 00 00 00 00
+RX 06102000 [8] 02 F0 04 00 00 00 00 00
+```
+
+Оценка: PASS. Получен `ACK -> NACK(CAN_ERR_INVALID_KEY=0x0004)`.
+
+Правильный ключ `0x55AA` (`AA 55` little-endian в payload bytes 3..4):
+
+```text
+cansend can0 00201000#02F000AA55000000
+
+TX 00201000 [8] 02 F0 00 AA 55 00 00 00
+RX 05102000 [8] 02 F0 00 00 00 00 00 00
+RX 07102000 [8] 01 02 F0 00 00 00 00 00
+```
+
+После reset плата снова ответила на `F001 GET_DEVICE_INFO` на default/current NodeID `0x20`:
+
+```text
+TX 00201000 [8] 01 F0 00 00 00 00 00 00
+RX 05102000 [8] 01 F0 00 00 00 00 00 00
+RX 07102000 [8] 02 80 01 01 00 08 0C 22
+RX 07102000 [8] 02 80 07 14 52 16 30 30
+RX 07102000 [8] 02 80 30 30 30 32 00 00
+RX 07102000 [8] 01 01 F0 00 00 00 00 00
+```
+
+Оценка: PASS. `REBOOT` отправляет `ACK -> DONE`, затем выполняет reset; recovery/discovery после reset штатный.
+
+#### F003 FLASH_COMMIT
+
+Команда:
+
+```text
+cansend can0 00201000#03F0000000000000
+
+TX 00201000 [8] 03 F0 00 00 00 00 00 00
+RX 05102000 [8] 03 F0 00 00 00 00 00 00
+RX 07102000 [8] 01 03 F0 00 00 00 00 00
+```
+
+После commit плата продолжила отвечать на `F001 GET_DEVICE_INFO`:
+
+```text
+TX 00201000 [8] 01 F0 00 00 00 00 00 00
+RX 05102000 [8] 01 F0 00 00 00 00 00 00
+RX 07102000 [8] 02 80 01 01 00 08 0C 22
+RX 07102000 [8] 02 80 07 14 52 16 30 30
+RX 07102000 [8] 02 80 30 30 30 32 00 00
+RX 07102000 [8] 01 01 F0 00 00 00 00 00
+```
+
+Оценка: PASS. `FLASH_COMMIT` вернул `ACK -> DONE`; NodeID `0x20` сохранен, связь не нарушена.
+
+#### F005 SET_NODE_ID
+
+Проверен RAM-переход `0x20 -> 0x21 -> 0x20` без последующего `COMMIT`.
+
+Смена `0x20 -> 0x21`:
+
+```text
+cansend can0 00201000#05F0210000000000
+
+TX 00201000 [8] 05 F0 21 00 00 00 00 00
+RX 05102000 [8] 05 F0 00 00 00 00 00 00
+RX 07102100 [8] 01 05 F0 21 00 00 00 00
+```
+
+Проверка нового NodeID `0x21`:
+
+```text
+cansend can0 00211000#01F0000000000000
+
+TX 00211000 [8] 01 F0 00 00 00 00 00 00
+RX 05102100 [8] 01 F0 00 00 00 00 00 00
+RX 07102100 [8] 02 80 01 01 00 08 0C 22
+RX 07102100 [8] 02 80 07 14 52 16 30 30
+RX 07102100 [8] 02 80 30 30 30 32 00 00
+RX 07102100 [8] 01 01 F0 00 00 00 00 00
+```
+
+Возврат `0x21 -> 0x20`:
+
+```text
+cansend can0 00211000#05F0200000000000
+
+TX 00211000 [8] 05 F0 20 00 00 00 00 00
+RX 05102100 [8] 05 F0 00 00 00 00 00 00
+RX 07102000 [8] 01 05 F0 20 00 00 00 00
+```
+
+Проверка восстановления `0x20`:
+
+```text
+cansend can0 00201000#01F0000000000000
+
+TX 00201000 [8] 01 F0 00 00 00 00 00 00
+RX 05102000 [8] 01 F0 00 00 00 00 00 00
+RX 07102000 [8] 02 80 01 01 00 08 0C 22
+RX 07102000 [8] 02 80 07 14 52 16 30 30
+RX 07102000 [8] 02 80 30 30 30 32 00 00
+RX 07102000 [8] 01 01 F0 00 00 00 00 00
+```
+
+Оценка: PASS. `SET_NODE_ID` отправляет `ACK` со старого NodeID, а `DONE` уже с нового NodeID; оба адреса подтверждены discovery.
+
+#### F006 FACTORY_RESET
+
+Неверный ключ:
+
+```text
+cansend can0 00201000#06F0000000000000
+
+TX 00201000 [8] 06 F0 00 00 00 00 00 00
+RX 05102000 [8] 06 F0 00 00 00 00 00 00
+RX 06102000 [8] 06 F0 04 00 00 00 00 00
+```
+
+Оценка: PASS. Получен `ACK -> NACK(CAN_ERR_INVALID_KEY=0x0004)`.
+
+Правильный ключ `0xDEAD` (`AD DE` little-endian в payload bytes 3..4):
+
+```text
+cansend can0 00201000#06F000ADDE000000
+
+TX 00201000 [8] 06 F0 00 AD DE 00 00 00
+RX 05102000 [8] 06 F0 00 00 00 00 00 00
+RX 07102000 [8] 01 06 F0 00 00 00 00 00
+```
+
+После reset плата снова ответила на default NodeID `0x20`:
+
+```text
+TX 00201000 [8] 01 F0 00 00 00 00 00 00
+RX 05102000 [8] 01 F0 00 00 00 00 00 00
+RX 07102000 [8] 02 80 01 01 00 08 0C 22
+RX 07102000 [8] 02 80 07 14 52 16 30 30
+RX 07102000 [8] 02 80 30 30 30 32 00 00
+RX 07102000 [8] 01 01 F0 00 00 00 00 00
+```
+
+Оценка: PASS. `FACTORY_RESET` отправляет `ACK -> DONE`, стирает Flash config page, выполняет reset, после recovery плата доступна на default NodeID `0x20`.
+
+#### F007 после service regression
+
+Контрольный `GET_STATUS` после `FACTORY_RESET` и recovery:
+
+```text
+cansend can0 00201000#07F0000000000000
+
+TX 00201000 [8] 07 F0 00 00 00 00 00 00
+RX 05102000 [8] 07 F0 00 00 00 00 00 00
+RX 07102000 [8] 02 80 01 00 02 00 00 00
+RX 07102000 [8] 02 80 02 00 06 00 00 00
+RX 07102000 [8] 02 80 03 00 00 00 00 00
+...
+RX 07102000 [8] 02 80 12 00 00 00 00 00
+RX 07102000 [8] 01 07 F0 00 00 00 00 00
+```
+
+Разбор:
+
+```text
+RX_TOTAL = 2
+TX_TOTAL = 6
+RX_QUEUE_OVERFLOW = 0
+TX_QUEUE_OVERFLOW = 0
+DISPATCHER_OVERFLOW = 0
+DROP_NOT_EXT = 0
+DROP_WRONG_DST = 0
+DROP_WRONG_TYPE = 0
+DROP_WRONG_DLC = 0
+TX_MAILBOX_TIMEOUT = 0
+TX_HAL_ERROR = 0
+CAN_ERROR_CALLBACK = 0
+ERROR_WARNING = 0
+ERROR_PASSIVE = 0
+BUS_OFF = 0
+LAST_HAL_ERROR = 0
+LAST_ESR = 0
+APP_QUEUE_OVERFLOW = 0
+```
+
+Оценка: PASS. После factory reset счетчики стартовали заново; `RX_TOTAL=2` соответствует `F001` после reset и текущему `F007`, `TX_TOTAL=6` соответствует ответам до формирования DATA-метрик текущего `F007`. Queue overflow, transport drops и CAN fault counters равны `0`.
+
+Итог 04.05.2026: service-команды `F002`, `F003`, `F005`, `F006` закрыты стендовыми тестами Motion.
+
+### 11.14. Parallel TIM-group no-load check 04.05.2026
+
+После service regression выполнена дополнительная проверка параллельного запуска двух независимых motion-групп без нагрузки.
+
+Цель: подтвердить, что занятость ресурса действует на уровне timer-group, но `TIM1 group` и `TIM2 group` могут выполнять движения параллельно.
+
+Подготовка:
+
+```text
+cansend can0 00201000#0401000000000000
+cansend can0 00201000#0401040000000000
+```
+
+Обе команды `STOP` вернули `ACK -> DONE`.
+
+Команды параллельного запуска:
+
+```text
+cansend can0 00201000#010100E803000019
+cansend can0 00201000#010104E803000019
+```
+
+Разбор:
+
+```text
+motor0: TIM1 group, steps=1000, speed=100 sps, expected duration ~= 10 s
+motor4: TIM2 group, steps=1000, speed=100 sps, expected duration ~= 10 s
+```
+
+Фактический результат:
+
+```text
+TX 00201000 [8] 01 01 00 E8 03 00 00 19
+RX 05102000 [8] 01 01 00 00 00 00 00 00
+
+TX 00201000 [8] 01 01 04 E8 03 00 00 19
+RX 05102000 [8] 01 01 00 00 00 00 00 00
+
+RX 07102000 [8] 01 01 01 00 00 00 00 00
+RX 07102000 [8] 01 01 01 04 00 00 00 00
+```
+
+Временная оценка:
+
+```text
+motor0: start 29.416108, DONE 39.405924, duration ~= 9.99 s
+motor4: start 31.472166, DONE 41.464037, duration ~= 9.99 s
+```
+
+Оценка: PASS. `motor4` был запущен до завершения `motor0`, `NACK(CAN_ERR_MOTOR_BUSY)` не было, оба движения завершились самостоятельным `DONE` в расчетное время. Это подтверждает параллельность независимых групп `TIM1 motors 0..3` и `TIM2 motors 4..7` на no-load CAN-уровне.

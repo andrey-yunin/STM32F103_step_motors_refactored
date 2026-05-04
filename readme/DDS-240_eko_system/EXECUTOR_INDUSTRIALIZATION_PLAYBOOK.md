@@ -6,7 +6,7 @@
 
 Проверенный эталон: плата Fluidics STM32F103, 13 насосов + 3 клапана, CAN 1 Mbit/s, FreeRTOS, IWDG, safe-state, `GET_STATUS`, fault-injection и production smoke-test.
 
-Текущая рабочая цель: довести Motion STM32F103 executor после кодовой реализации finite `MOTOR_ROTATE -> DONE` до стендовой приемки. `MOTOR_HOME` с настоящим home-condition остается отдельным hardware-блоком.
+Текущая рабочая цель: довести Motion STM32F103 executor после no-load CAN приемки finite `MOTOR_ROTATE -> DONE` до электрического STEP/EN контроля и физических тестов с нагрузкой. `MOTOR_HOME` с настоящим home-condition остается отдельным hardware-блоком.
 
 ---
 
@@ -42,7 +42,7 @@
 *   Все тестовые fault-injection флаги возвращены в `0` перед production-сборкой.
 *   Результаты тестов внесены в отчет экосистемы.
 
-### 2.1. Быстрый вход: Motion STM32F103 на 27.04.2026
+### 2.1. Быстрый вход: Motion STM32F103 на 04.05.2026
 
 Этот блок нужен, чтобы войти в работу без истории чата.
 
@@ -54,10 +54,10 @@ STM32F103_step_motors_refactored
 
 Актуальные документы для входа:
 
-*   `CONDUCTOR_INTEGRATION_GUIDE.md`, раздел `8.9` - текущий статус Motion, исторические SocketCAN-команды и требования к Дирижеру.
+*   `CONDUCTOR_INTEGRATION_GUIDE.md`, разделы `8.9..8.10` - исторический статус Motion, результаты 04.05.2026 и требования к Дирижеру.
 *   `EXECUTOR_TESTING_GUIDE.md`, раздел `8` - физический smoke-test Motion executor.
-*   `../project_report.md`, разделы `10.6..11.7` - полный отчет по тестам, архитектуре `DONE` и кодовой реализации 24.04.2026.
-*   `../refactoring_plan.md`, разделы `10..11`, особенно `11.H` - актуальный рабочий план на понедельник. Старые разделы выше считаются историческими, если противоречат разделам `10..11`.
+*   `../project_report.md`, разделы `10.6..11.14` - полный отчет по тестам, архитектуре `DONE`, no-load regression, service commands и parallel TIM-group проверке.
+*   `../refactoring_plan.md`, разделы `10..11`, особенно `11.H..11.J` - актуальный рабочий план. Старые разделы выше считаются историческими, если противоречат разделам `10..11`.
 
 Текущая подтвержденная база Motion:
 
@@ -74,18 +74,22 @@ STM32F103_step_motors_refactored
 *   `configTOTAL_HEAP_SIZE = 8192`; создание очередей и задач проверяется.
 *   Code baseline 24.04.2026: `MOTOR_ROTATE` реализован как finite command через STEP counter, PWM auto-stop и low-level `DONE` из MotionController task context.
 *   Code baseline 24.04.2026: `MOTOR_START_CONTINUOUS speed>0` входит в continuous PWM state и удерживает TIM resource до `MOTOR_STOP`.
+*   No-load CAN regression 04.05.2026: `MOTOR_ROTATE steps=100 speed=100 sps` возвращает `ACK`, затем самостоятельный `DONE` примерно через 1 s без штатного `STOP`.
+*   No-load CAN regression 04.05.2026: `MOTOR_ROTATE steps!=0 speed=0` возвращает `ACK + NACK(CAN_ERR_INVALID_PARAM 0x0006)`.
+*   No-load CAN regression 04.05.2026: конфликт внутри `TIM1 group` и `TIM2 group` возвращает `ACK + NACK(MOTOR_BUSY 0x0003)`.
+*   No-load CAN regression 04.05.2026: параллельные finite движения в разных группах (`motor0`/`TIM1`, `motor4`/`TIM2`) допустимы и завершаются отдельными `DONE`.
+*   No-load CAN regression 04.05.2026: `MOTOR_START_CONTINUOUS speed>0` входит в active state, а `MOTOR_STOP` возвращает `ACK + DONE`.
+*   Service regression 04.05.2026: `F002 REBOOT`, `F003 COMMIT`, `F005 SET_NODE_ID`, `F006 FACTORY_RESET` закрыты на стенде Motion.
+*   `F005 SET_NODE_ID` transition semantics подтверждена: `ACK` приходит со старого NodeID, `DONE` уже с нового NodeID.
+*   Финальные `F007 GET_STATUS` после no-load/service regression показывают чистые queue/drop/CAN fault counters в нормальном прогоне.
 *   Последняя сборка проходит: `text=47736`, `data=256`, `bss=14640`.
 
 Открытые ограничения Motion:
 
 *   Queue overflow, TX mailbox timeout, HAL CAN error и CAN error warning/passive/bus-off counters не форсировались fault/stress тестами; в нормальном прогоне они `0`.
 *   `CAN1_SCE_IRQHandler()` / `HAL_CAN_ErrorCallback()` подключены, но отдельная fault-injection проверка CAN error path не выполнялась.
-*   `F002 REBOOT`, `F003 COMMIT`, `F005 SET_NODE_ID`, `F006 FACTORY_RESET` не закрыты стендовыми тестами Motion.
-*   Физическое измерение STEP/EN в watchdog/fault safe-state path еще не выполнено на подключенном измерительном оборудовании.
-*   `MOTOR_ROTATE -> DONE` после кодовых правок еще не подтвержден no-load CAN regression на плате.
 *   STEP/EN для finite completion еще не измерены логическим анализатором/осциллографом.
-*   `MOTOR_BUSY` на уровне общей TIM-группы после новой реализации еще не подтвержден стендом.
-*   `MOTOR_START_CONTINUOUS speed>0` после новой реализации еще не подтвержден стендом.
+*   Физическое измерение STEP/EN в watchdog/fault safe-state path еще не выполнено на подключенном измерительном оборудовании.
 *   `MOTOR_HOME` пока не имеет подтвержденного home-condition и не считается закрытым как настоящий HOME.
 *   Для `MOTOR_ROTATE` скорость является частью low-level payload и контрактом recipe-level atomic action; Motion применяет скорость текущей команды, а не только default/saved speed.
 *   Motion валидирует command `speed` против локального safe-limit до запуска STEP.
@@ -95,19 +99,14 @@ STM32F103_step_motors_refactored
 
 Рекомендуемый следующий порядок:
 
-1. Прошить текущий build и выполнить sanity: `F001 GET_DEVICE_INFO`, затем `F007 GET_STATUS`.
-2. Выполнить no-load CAN regression: `MOTOR_ROTATE` должен дать `ACK`, затем самостоятельный `DONE` без штатного `STOP`.
-3. Проверить `speed=0` при ненулевых `steps`: ожидается `ACK + NACK(CAN_ERR_INVALID_PARAM)`.
-4. Проверить занятость motion group: конфликт на `TIM1 group` или `TIM2 group` возвращает `MOTOR_BUSY`, параллельные движения допустимы только на разных группах.
-5. Проверить `MOTOR_START_CONTINUOUS speed>0`: `ACK + DONE` после входа в continuous PWM state, ресурс группы занят до `MOTOR_STOP`, выход через `MOTOR_STOP -> ACK + DONE`.
-6. Проверить логическим анализатором/осциллографом STEP/EN: количество импульсов равно `abs(steps)`, после completion STEP остановлен, EN переведен в idle, `DONE` приходит после остановки STEP.
-7. Только после no-load и STEP/EN подтверждения переходить к мотору под нагрузкой.
-8. `MOTOR_HOME` закрывать только после подтвержденного home-condition; не считать виртуальный переход к позиции `0` настоящим HOME.
-9. Fault/stress тесты CAN diagnostics выполнять отдельным этапом, если потребуется подтверждать overflow/error counters.
+1. Подготовить логический анализатор или осциллограф и проверить STEP/EN: количество импульсов равно `abs(steps)`, после completion STEP остановлен, EN переведен в idle, `DONE` приходит после остановки STEP.
+2. Только после STEP/EN подтверждения переходить к мотору под нагрузкой.
+3. `MOTOR_HOME` закрывать только после подтвержденного home-condition; не считать виртуальный переход к позиции `0` настоящим HOME.
+4. Fault/stress тесты CAN diagnostics выполнять отдельным этапом, если потребуется подтверждать overflow/error counters.
 
 Текущая приемка `MOTOR_ROTATE -> DONE` не требует перехода на DDA/TIM3. DDA/TIM3 является перспективным roadmap-блоком для независимых скоростей, сложных motion profiles и multi-axis coordination, но не является обязательным условием текущего industrial baseline.
 
-Для Motion на 27.04.2026 safe-state и watchdog база уже закрыты. Не начинать физические тесты движения до no-load подтверждения `ROTATE -> DONE` и измерения STEP/EN. Не пытаться закрывать настоящий `HOME` без подтвержденного датчика или другого home-condition.
+Для Motion на 04.05.2026 no-load CAN regression и service regression закрыты. Не начинать физические тесты движения до измерения STEP/EN. Не пытаться закрывать настоящий `HOME` без подтвержденного датчика или другого home-condition.
 
 ---
 

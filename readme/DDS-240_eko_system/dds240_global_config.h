@@ -18,7 +18,7 @@
 /* -------------------------------------------------------------------------- */
 
 #define DDS240_ECOSYSTEM_STANDARD_MAJOR             1U
-#define DDS240_ECOSYSTEM_STANDARD_MINOR             3U
+#define DDS240_ECOSYSTEM_STANDARD_MINOR             4U
 
 /* -------------------------------------------------------------------------- */
 /* CAN executor transport profile                                             */

@@ -472,7 +472,7 @@ cansend can0 00301000#07F0000000000000
 - `GET_STATUS (0xF007)` PASS: получены ACK, DATA-метрики `0x0001..0x0012`, DONE. Порядок многокадрового ответа корректный: DATA до DONE.
 - Transport diagnostics PASS: `DROP_WRONG_DLC`, `DROP_WRONG_DST`, `DROP_WRONG_TYPE` растут адресно; queue overflow, HAL CAN error и CAN fault counters в нормальном прогоне остались `0`.
 - Standard ID на текущей настройке Motion отсекается аппаратным bxCAN-фильтром до firmware: ответа нет, `DROP_NOT_EXT` не растет. Для Дирижера это остается `ACK timeout`; счетчик `DROP_NOT_EXT` нельзя использовать как обязательное подтверждение Standard-ID ошибки на этой конфигурации фильтра.
-- Текущий статус: CAN smoke-test, расширенный CAN acceptance, `GET_STATUS` diagnostics и доменный CAN-путь Motion без нагрузок пройдены. Физическое движение, сервисы `F002/F003/F005/F006`, safe-state и IWDG остаются следующими этапами.
+- Статус на 23.04.2026: CAN smoke-test, расширенный CAN acceptance, `GET_STATUS` diagnostics и доменный CAN-путь Motion без нагрузок пройдены. Физическое движение, сервисы `F002/F003/F005/F006`, safe-state и IWDG оставались следующими этапами на момент этого исторического прогона.
 
 Проверенные команды SocketCAN:
 
@@ -554,6 +554,35 @@ TX mailbox/HAL CAN error/CAN warning/passive/bus-off/last error/last ESR=0
 Историческое ограничение no-load прошивки на момент этого прогона: `ROTATE` переводил канал в active-state, но автоматический подсчет шагов, остановка и `DONE` по фактическому завершению еще не были реализованы.
 
 Статус текущей ветки Motion Executor от 24.04.2026: `MOTOR_ROTATE` реализован как finite command через счетчик STEP-событий TIM1/TIM2 PWM path. Дирижер должен ожидать `ACK`, затем самостоятельный low-level `DONE` без штатного `STOP`. `STOP` остается отдельной отменой/остановкой active movement и не является частью нормального завершения `ROTATE`.
+
+## 8.10. Статус проверки Motion (04.05.2026)
+
+После перепрошивки текущей веткой Motion no-load CAN regression закрыта без подключенных нагрузок:
+
+| Проверка | Фактический результат |
+|:---------|:----------------------|
+| `MOTOR_ROTATE steps=100 speed=100 sps` | `ACK`, затем самостоятельный `DONE` примерно через 1 s без штатного `STOP`. |
+| `MOTOR_ROTATE steps!=0 speed=0` | `ACK`, затем `NACK 0x0006 INVALID_PARAM`; движение не запускается. |
+| Конфликт внутри `TIM1 group` | Вторая команда в группе `motor0..3` получает `ACK + NACK 0x0003 MOTOR_BUSY`. |
+| Конфликт внутри `TIM2 group` | Вторая команда в группе `motor4..7` получает `ACK + NACK 0x0003 MOTOR_BUSY`. |
+| Параллельные разные TIM-группы | `motor0` и `motor4` стартуют независимо, оба получают `ACK`, затем отдельные `DONE`; `MOTOR_BUSY` не возникает. |
+| `START_CONTINUOUS speed>0` + `STOP` | `START_CONTINUOUS` получает `ACK + DONE` после входа в continuous state; `STOP` получает `ACK + DONE` и освобождает ресурс группы. |
+| `F002 REBOOT` | Неверный key дает `NACK 0x0004`, верный `0x55AA` дает `ACK + DONE` и reset. |
+| `F003 COMMIT` | `ACK + DONE`, после команды узел продолжает отвечать на `F001`. |
+| `F005 SET_NODE_ID` | `ACK` приходит от старого NodeID, `DONE` от нового NodeID; discovery по новому адресу проходит. |
+| `F006 FACTORY_RESET` | Неверный key дает `NACK 0x0004`, верный `0xDEAD` дает `ACK + DONE`, reset и возврат к default `0x20`. |
+| Финальный `F007 GET_STATUS` | Queue/drop/CAN fault counters в нормальном прогоне остаются `0`; многокадровый ответ завершается `DONE`. |
+
+Требования к Дирижеру после этого прогона:
+
+- Для finite `MOTOR_ROTATE` штатное завершение - `ACK`, затем `DONE` от Motion; `STOP` не используется как нормальный признак завершения.
+- Operation timeout для `MOTOR_ROTATE` рассчитывается из `abs(steps) / speed` с запасом на локальный motion profile исполнителя.
+- `speed=0` при ненулевых `steps` должен считаться ошибкой параметров еще на стороне планировщика Дирижера; если команда все же отправлена, Motion вернет `NACK 0x0006`.
+- Планировщик Дирижера должен учитывать shared resource lock: одновременно допустимо одно движение в `TIM1 group` и одно движение в `TIM2 group`; конфликт внутри группы ожидаемо дает `MOTOR_BUSY`.
+- При `F005 SET_NODE_ID` Дирижер должен принять переходный ответ `ACK` со старого NodeID и финальный `DONE` с нового NodeID, затем выполнить discovery по новому адресу.
+- После `REBOOT` или `FACTORY_RESET` Дирижер должен выполнить recovery/discovery и заново сверить `NodeID`, `device_type`, `channels` и UID.
+
+Открытые блоки Motion на уровне физики: STEP/EN еще не измерены логическим анализатором/осциллографом, реальные драйверы/моторы с нагрузкой не подключались, настоящий `HOME` не закрыт без home-condition, CAN fault/stress counters не форсировались.
 
 ---
 

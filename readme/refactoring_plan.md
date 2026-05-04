@@ -582,8 +582,8 @@ text=43044, data=256, bss=14448, total=57748
     - [x] для ненулевого `steps` отклонять `speed=0` как invalid-param;
     - [x] для `steps=0` оставлять быстрый `ACK -> DONE` без запуска PWM;
     - [ ] `HOME` с реальным датчиком/condition оставить отдельным hardware-блоком, если нет подтвержденного home input.
-- [ ] После сборки прошивки выполнить no-load CAN regression: `ROTATE` должен дать `ACK`, затем самостоятельный `DONE` без штатного `STOP`.
-- [ ] В no-load regression проверить `START_CONTINUOUS speed>0 -> ACK + DONE`, занятость TIM-группы и штатный выход через `MOTOR_STOP -> ACK + DONE`.
+- [x] После сборки и перепрошивки 04.05.2026 выполнить no-load CAN regression: `ROTATE` дал `ACK`, затем самостоятельный `DONE` без штатного `STOP`.
+- [x] В no-load regression проверить `START_CONTINUOUS speed>0 -> ACK + DONE`, занятость TIM-группы и штатный выход через `MOTOR_STOP -> ACK + DONE`: PASS 04.05.2026.
 - [ ] После no-load regression переходить к физическим тестам STEP/EN на измерительном оборудовании и затем с мотором.
 
 #### F. Координация Fluidics / Conductor по `DONE` и насосам
@@ -616,21 +616,86 @@ text=43044, data=256, bss=14448, total=57748
     - [x] command `speed` применяется и валидируется;
     - [x] TIM resource model реализован как две группы: `TIM1 motors 0..3`, `TIM2 motors 4..7`;
     - [x] сборка проходит: `text=47736`, `data=256`, `bss=14640`.
-- [ ] Первый блок понедельника - no-load CAN regression текущей прошивки:
-    - [ ] `F001 GET_DEVICE_INFO`;
-    - [ ] `F007 GET_STATUS`;
-    - [ ] `MOTOR_ROTATE small steps, valid speed`: ожидать `ACK -> DONE` без `STOP`;
-    - [ ] `MOTOR_ROTATE steps != 0, speed=0`: ожидать `ACK -> NACK(CAN_ERR_INVALID_PARAM)`;
-    - [ ] `MOTOR_BUSY` внутри `TIM1 group`;
-    - [ ] `MOTOR_BUSY` внутри `TIM2 group`, если есть смысл проверять оба таймера;
-    - [ ] параллельный запуск на разных группах, если no-load стенд позволяет;
-    - [ ] `START_CONTINUOUS speed>0 -> ACK + DONE`, затем `MOTOR_STOP -> ACK + DONE`.
-- [ ] Второй блок понедельника - измерение STEP/EN без механической нагрузки:
+- [x] Первый блок понедельника - no-load CAN regression текущей прошивки:
+    - [x] `F001 GET_DEVICE_INFO`;
+    - [x] `F007 GET_STATUS`;
+    - [x] `MOTOR_ROTATE small steps, valid speed`: `ACK -> DONE` без `STOP`, PASS 04.05.2026;
+    - [x] `MOTOR_ROTATE steps != 0, speed=0`: `ACK -> NACK(CAN_ERR_INVALID_PARAM)`, PASS 04.05.2026;
+    - [x] `MOTOR_BUSY` внутри `TIM1 group`, PASS 04.05.2026;
+    - [x] `MOTOR_BUSY` внутри `TIM2 group`, PASS 04.05.2026;
+    - [x] `START_CONTINUOUS speed>0 -> ACK + DONE`, затем `MOTOR_STOP -> ACK + DONE`, PASS 04.05.2026.
+- [x] Отдельно подтвержден concurrency no-load сверх базовой приемки: параллельный запуск `motor0/TIM1 group` и `motor4/TIM2 group`, оба `ACK -> DONE`, без `MOTOR_BUSY`, PASS 04.05.2026.
+- [ ] Второй блок понедельника - измерение STEP/EN без механической нагрузки. Статус 04.05.2026: отложено до подготовки logic analyzer или осциллографа:
     - [ ] количество STEP равно `abs(steps)`;
     - [ ] после completion STEP остановлен;
     - [ ] EN переведен в idle/disabled;
     - [ ] `DONE` появляется после остановки STEP, а не сразу после старта.
+- [ ] Методика измерения зафиксирована в `project_report.md`, раздел `11.12`:
+    - [ ] Logic analyzer/PulseView: `GND`, `CH0=PA8 STEP`, `CH1=PA4 EN`, `CH2=PB0 DIR`;
+    - [ ] Осциллограф: `GND` щупа только к `GND` платы, `CH1=PA8`, `CH2=PA4`, опционально `CH3=PB0`;
+    - [ ] Проверочная команда: `cansend can0 00201000#0101006400000019`.
 - [ ] Третий блок после измерения - решение, можно ли переходить к мотору под нагрузкой или нужен фикс finite counting/IRQ.
+
+#### I. Возобновление работы 29.04.2026
+
+- [x] Документация и кодовая точка сверены:
+    - [x] актуальный baseline - уже не реализация `MOTOR_ROTATE -> DONE`, а его стендовая проверка;
+    - [x] `MotionDriver_StartFinite()` использует PWM interrupt mode и счетчик оставшихся STEP;
+    - [x] `HAL_TIM_PWM_PulseFinishedCallback()` останавливает PWM/STEP и ставит внутренний completion flag;
+    - [x] `MotionController` отправляет low-level `DONE` из task context после обновления state;
+    - [x] `TIM1_CC_IRQHandler` и `TIM2_IRQHandler` подключены к `HAL_TIM_IRQHandler`;
+    - [x] рабочее дерево чистое, последняя кодовая точка - `Refactor: implement finite Motion command completion`.
+- [x] Локальная сборка 29.04.2026 воспроизведена:
+    - [x] `PATH=/home/andrey/st/stm32cubeide_1.19.0/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.linux64_1.0.0.202410170706/tools/bin:$PATH make -C Debug -j4 all`;
+    - [x] результат: `text=47736`, `data=256`, `bss=14640`, `total=62632`.
+- [x] Стендовый no-load CAN regression закрыт после перепрошивки 04.05.2026:
+    - [x] `F001 GET_DEVICE_INFO`: `cansend can0 00201000#01F0000000000000` - PASS 29.04.2026, `ACK -> 3 DATA -> DONE`;
+    - [x] `F007 GET_STATUS`: `cansend can0 00201000#07F0000000000000` - PASS 29.04.2026, `ACK -> 18 DATA metrics -> DONE`, counters clean;
+    - [x] `MOTOR_ROTATE motor0 steps=100 speed=100 sps`: 29.04.2026 FAIL на старой/неактуальной прошивке; после перепрошивки 04.05.2026 PASS, `ACK -> DONE` за ~0.99 s;
+    - [x] `MOTOR_ROTATE motor0 steps=100 speed=0`: 29.04.2026 FAIL на старой/неактуальной прошивке; после перепрошивки 04.05.2026 PASS, `ACK -> NACK(CAN_ERR_INVALID_PARAM=0x0006)`;
+    - [x] `MOTOR_BUSY TIM1 group`: длинный `ROTATE motor0` (`cansend can0 00201000#0101001027000019`), затем конфликтующий `ROTATE motor1` (`cansend can0 00201000#0101016400000019`) - PASS 04.05.2026, `ACK -> NACK(CAN_ERR_MOTOR_BUSY=0x0003)`;
+    - [x] `MOTOR_BUSY TIM2 group`: длинный `ROTATE motor4` (`cansend can0 00201000#0101041027000019`), затем конфликтующий `ROTATE motor5` (`cansend can0 00201000#0101056400000019`) - PASS 04.05.2026, `ACK -> NACK(CAN_ERR_MOTOR_BUSY=0x0003)`;
+    - [x] `START_CONTINUOUS motor0 speed=1000 sps`: `cansend can0 00201000#0301000A00000000`, затем `STOP motor0`: `cansend can0 00201000#0401000000000000` - PASS 04.05.2026, оба цикла `ACK -> DONE`.
+- [x] Recovery после зависшего `MOTOR_ROTATE`: `STOP motor0` (`cansend can0 00201000#0401000000000000`) - PASS 29.04.2026, `ACK -> DONE`.
+- [x] `F007 GET_STATUS` после `ROTATE` FAIL и `STOP`: PASS 29.04.2026, `RX_TOTAL=3`, `TX_TOTAL=23`, queue/drop/CAN fault counters `0`.
+- [x] `F007 GET_STATUS` после no-load regression 04.05.2026: PASS, `RX_TOTAL=12`, `TX_TOTAL=21`, все queue/drop/CAN fault counters `0`, `DONE` последний.
+- [x] При default NodeID Motion `0x20` ожидаемые response IDs подтверждены:
+    - [x] `ACK`: `0x05102000`;
+    - [x] `NACK`: `0x06102000`;
+    - [x] `DATA/DONE`: `0x07102000`.
+- [x] Service commands regression 04.05.2026 закрыт:
+    - [x] `F002 REBOOT`: неверный ключ `ACK -> NACK(0x0004)`, правильный ключ `ACK -> DONE`, reset, recovery через `F001`;
+    - [x] `F003 FLASH_COMMIT`: `ACK -> DONE`, после commit `F001` отвечает на NodeID `0x20`;
+    - [x] `F005 SET_NODE_ID`: RAM-переход `0x20 -> 0x21 -> 0x20`, `ACK` со старого NodeID, `DONE` с нового NodeID, discovery на обоих адресах PASS;
+    - [x] `F006 FACTORY_RESET`: неверный ключ `ACK -> NACK(0x0004)`, правильный ключ `ACK -> DONE`, reset, recovery на default NodeID `0x20`;
+    - [x] финальный `F007 GET_STATUS`: PASS, `RX_TOTAL=2`, `TX_TOTAL=6`, все queue/drop/CAN fault counters `0`.
+
+#### J. Сверка с общей экосистемой DDS-240 на 29.04.2026
+
+- [x] Канонические источники для текущей работы определены:
+    - [x] `DDS-240_ECOSYSTEM_STANDARD.md`;
+    - [x] `dds240_global_config.h`;
+    - [x] `EXECUTOR_INDUSTRIALIZATION_PLAYBOOK.md`;
+    - [x] `CONDUCTOR_INTEGRATION_GUIDE.md` для требований к Дирижеру;
+    - [x] старый `executor_architecture_guide.md` использовать только как исторический/поясняющий документ, если он не противоречит ecosystem standard.
+- [x] Motion сейчас совпадает с общими правилами по ключевым пунктам:
+    - [x] CAN `1 Mbit/s`, 29-bit Extended ID, strict `DLC=8`;
+    - [x] default NodeID `0x20`, DeviceType `0x01`, 8 каналов `0..7`;
+    - [x] `ACK -> DATA... -> DONE` / `ACK -> NACK`, транспортно невалидные кадры без `ACK/NACK`;
+    - [x] broadcast `DstAddr=0x00` принимается;
+    - [x] `TransmitFifoPriority = ENABLE`;
+    - [x] mailbox guard до `HAL_CAN_AddTxMessage`;
+    - [x] service `0xF001..0xF007` реализованы;
+    - [x] `GET_STATUS` common metrics `0x0001..0x0012` реализованы;
+    - [x] safe-state hook `MotionDriver_AllSafe()` вызывается при старте, `Error_Handler()` и fault handlers;
+    - [x] IWDG refresh выполняет только watchdog supervisor после heartbeat критических задач.
+- [ ] Открытые ecosystem gaps / doc-sync перед полной промышленной приемкой:
+    - [x] `F002/F003/F005/F006` для Motion закрыты стендовыми тестами 04.05.2026;
+    - [ ] CAN fault path и bus-off recovery policy не закрыты отдельным fault/stress тестом;
+    - [ ] `AppConfig_Init()` создает `configMutex`, но не проверяет явный отказ `osMutexNew()` как критический RTOS resource;
+    - [ ] в `app_config.h` остались неиспользуемые старые `CAN_DEVICE_TYPE_MOTOR=0x20` / `CAN_DEVICE_TYPE_THERMO=0x40`, которые по смыслу являются NodeID, а не DeviceType;
+    - [ ] `dds240_global_config.h` содержит `DDS240_ECOSYSTEM_STANDARD_MINOR 3U`, тогда как `DDS-240_ECOSYSTEM_STANDARD.md` помечен версией `1.4`;
+    - [ ] `executor_architecture_guide.md` содержит исторические формулировки (`7` моторов, старые правила transport/parser), поэтому не должен использоваться как источник истины без сверки со standard/playbook.
 
 ### 11.4. Что не делать первым
 

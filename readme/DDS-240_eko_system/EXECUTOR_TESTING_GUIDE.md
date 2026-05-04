@@ -244,4 +244,6 @@ queue overflow/HAL CAN error/CAN fault counters=0
 | Short DLC | `cansend can0 00201000#01F0` | Ответ отсутствует; `DROP_WRONG_DLC` подтвержден через `F007`. |
 | Broadcast discovery | `cansend can0 00001000#01F0000000000000` | `ACK`, три DATA, затем `DONE`. |
 
-CAN Level A/acceptance и `GET_STATUS` diagnostics подтверждены. Следующие уровни доведения Motion до промышленного стандарта: сервисы `F002/F003/F005/F006`, safe-state hook, IWDG supervisor и физические тесты движения после решения по auto-stop/auto-DONE.
+CAN Level A/acceptance и `GET_STATUS` diagnostics подтверждены.
+
+Обновление 04.05.2026: после перепрошивки текущей веткой Motion закрыты no-load CAN regression и service regression без подключенных нагрузок. Подтверждены finite `MOTOR_ROTATE -> DONE`, `speed=0 -> NACK 0x0006`, `MOTOR_BUSY` внутри `TIM1/TIM2 group`, параллельные движения в разных TIM-группах, `START_CONTINUOUS speed>0 + STOP`, а также `F002/F003/F005/F006`. Следующий не закрытый физический уровень - измерение STEP/EN логическим анализатором или осциллографом; после него можно переходить к драйверу/мотору под нагрузкой.
