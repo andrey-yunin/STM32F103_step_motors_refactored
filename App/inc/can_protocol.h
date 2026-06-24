@@ -81,13 +81,18 @@
 // ============================================================
 // Коды ошибок для NACK-ответов
 // ============================================================
+// Common executor NACK namespace: одинаковые значения для всех плат.
 #define CAN_ERR_NONE                0x0000
 #define CAN_ERR_UNKNOWN_CMD         0x0001
-#define CAN_ERR_INVALID_MOTOR_ID    0x0002
-#define CAN_ERR_MOTOR_BUSY          0x0003
+#define CAN_ERR_INVALID_DEVICE_ID   0x0002
+#define CAN_ERR_DEVICE_BUSY         0x0003
 #define CAN_ERR_INVALID_KEY         0x0004
 #define CAN_ERR_FLASH_WRITE         0x0005
 #define CAN_ERR_INVALID_PARAM       0x0006
+
+// Motion aliases: motor_id является low-level channel/resource id.
+#define CAN_ERR_INVALID_MOTOR_ID    CAN_ERR_INVALID_DEVICE_ID
+#define CAN_ERR_MOTOR_BUSY          CAN_ERR_DEVICE_BUSY
 
 // ============================================================
 // Метрики GET_STATUS (0xF007): metric_id:uint16 LE + value:uint32 LE
