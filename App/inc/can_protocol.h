@@ -122,6 +122,7 @@
 void CAN_SendAck(uint16_t cmd_code);
 void CAN_SendNackPublic(uint16_t cmd_code, uint16_t error_code);
 void CAN_SendDone(uint16_t cmd_code, uint8_t device_id);
-void CAN_SendData(uint16_t cmd_code, uint8_t *data, uint8_t len);
+void CAN_SendData(uint16_t cmd_code, uint8_t sequence_info,
+                  const uint8_t *data, uint8_t len);
 
 #endif /* CAN_PROTOCOL_H_ */

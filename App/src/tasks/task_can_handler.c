@@ -168,7 +168,15 @@ void CAN_SendNackPublic(uint16_t cmd_code, uint16_t error_code)
     CAN_SendNack(cmd_code, error_code);
 }
 
-void CAN_SendData(uint16_t cmd_code, uint8_t *data, uint8_t len)
+// --- Формирование DATA ---
+
+/*
+ * Обработчик команды задаёт sequence и признак последнего фрагмента.
+ * Payload содержит максимум 6 байт; CAN-задача передаёт кадр из TX-очереди.
+ * Код команды сохраняется в API для контекста и не входит в DATA payload.
+ */
+void CAN_SendData(uint16_t cmd_code, uint8_t sequence_info,
+                  const uint8_t *data, uint8_t len)
 {
     (void)cmd_code;
 
@@ -185,7 +193,7 @@ void CAN_SendData(uint16_t cmd_code, uint8_t *data, uint8_t len)
     tx.header.DLC = 8;
 
     tx.data[0] = CAN_SUB_TYPE_DATA;
-    tx.data[1] = 0x80; // EOT=1, Seq=0
+    tx.data[1] = sequence_info;
 
     for (uint8_t i = 0; i < len && i < 6; i++) {
         tx.data[2 + i] = data[i];

@@ -164,14 +164,12 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
-  MotionDriver_AllSafe();
   MX_CAN_Init();
   MX_RTC_Init();
   MX_TIM1_Init();
   MX_TIM2_Init();
   MX_USART1_UART_Init();
   MX_USART2_UART_Init();
-  MotionDriver_AllSafe();
   MX_IWDG_Init();
   /* USER CODE BEGIN 2 */
 
@@ -330,7 +328,7 @@ static void MX_CAN_Init(void)
   hcan.Init.TimeTriggeredMode = DISABLE;
   hcan.Init.AutoBusOff = DISABLE;
   hcan.Init.AutoWakeUp = DISABLE;
-  hcan.Init.AutoRetransmission = DISABLE;
+  hcan.Init.AutoRetransmission = ENABLE;
   hcan.Init.ReceiveFifoLocked = DISABLE;
   hcan.Init.TransmitFifoPriority = ENABLE;
   if (HAL_CAN_Init(&hcan) != HAL_OK)
@@ -671,7 +669,7 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIO_GPIO_Port, GPIO_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOC, GPIO_Pin|STB_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOA, EN_1_Pin|EN_2_Pin|EN_3_Pin|EN_4_Pin
@@ -682,12 +680,12 @@ static void MX_GPIO_Init(void)
                           |DIR_8_Pin|EN_7_Pin|EN_8_Pin|DIR_4_Pin
                           |DIR_5_Pin|DIR_6_Pin, GPIO_PIN_RESET);
 
-  /*Configure GPIO pin : GPIO_Pin */
-  GPIO_InitStruct.Pin = GPIO_Pin;
+  /*Configure GPIO pins : GPIO_Pin STB_Pin */
+  GPIO_InitStruct.Pin = GPIO_Pin|STB_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIO_GPIO_Port, &GPIO_InitStruct);
+  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
   /*Configure GPIO pins : EN_1_Pin EN_2_Pin EN_3_Pin EN_4_Pin
                            EN_5_Pin EN_6_Pin */

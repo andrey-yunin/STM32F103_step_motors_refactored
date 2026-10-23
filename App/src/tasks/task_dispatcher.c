@@ -44,7 +44,7 @@ static void SendStatusMetric(uint16_t cmd_code, uint16_t metric_id, uint32_t val
     data[4] = (uint8_t)((value >> 16) & 0xFF);
     data[5] = (uint8_t)((value >> 24) & 0xFF);
 
-    CAN_SendData(cmd_code, data, sizeof(data));
+    CAN_SendData(cmd_code, 0x80U, data, sizeof(data));
 }
 
 void app_start_task_dispatcher(void *argument)
@@ -134,17 +134,17 @@ void app_start_task_dispatcher(void *argument)
             data[3] = MOTOR_COUNT;
             data[4] = uid[0];
             data[5] = uid[1];
-            CAN_SendData(parsed.cmd_code, data, 6);
+            CAN_SendData(parsed.cmd_code, 0x00U, data, 6);
 
             // Пакет 2: Середина UID
             memcpy(data, &uid[2], 6);
-            CAN_SendData(parsed.cmd_code, data, 6);
+            CAN_SendData(parsed.cmd_code, 0x01U, data, 6);
 
             // Пакет 3: Конец UID
             memcpy(data, &uid[8], 4);
             data[4] = 0;
             data[5] = 0;
-            CAN_SendData(parsed.cmd_code, data, 6);
+            CAN_SendData(parsed.cmd_code, 0x82U, data, 6);
 
             CAN_SendDone(parsed.cmd_code, 0);
             break;
@@ -201,11 +201,11 @@ void app_start_task_dispatcher(void *argument)
 
             // Пакет 1: UID[0..5]
             memcpy(data, &uid[0], 6);
-            CAN_SendData(parsed.cmd_code, data, 6);
+            CAN_SendData(parsed.cmd_code, 0x00U, data, 6);
 
             // Пакет 2: UID[6..11]
             memcpy(data, &uid[6], 6);
-            CAN_SendData(parsed.cmd_code, data, 6);
+            CAN_SendData(parsed.cmd_code, 0x81U, data, 6);
 
             CAN_SendDone(parsed.cmd_code, 0);
             break;
