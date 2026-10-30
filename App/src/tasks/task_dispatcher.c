@@ -27,13 +27,15 @@
 #include "can_protocol.h"
 #include "command_protocol.h"
 #include "watchdog.h"
+#include "task_tmc2209_manager.h"
+#include "tmc2209_driver.h"
 
 // Отправляет одну метрику GET_STATUS.
 //
 // Формат DATA после служебных байтов CAN_SendData():
 // byte 2..3: metric_id, uint16 little-endian
 // byte 4..7: value, uint32 little-endian
-static void SendStatusMetric(uint16_t cmd_code, uint16_t metric_id, uint32_t value)
+static void SendScalarData(uint16_t cmd_code, uint8_t sequence, uint16_t metric_id, uint32_t value)
 {
     uint8_t data[6];
 
@@ -44,7 +46,77 @@ static void SendStatusMetric(uint16_t cmd_code, uint16_t metric_id, uint32_t val
     data[4] = (uint8_t)((value >> 16) & 0xFF);
     data[5] = (uint8_t)((value >> 24) & 0xFF);
 
-    CAN_SendData(cmd_code, 0x80U, data, sizeof(data));
+    CAN_SendData(cmd_code, sequence, data, sizeof(data));
+}
+
+static void SendStatusMetric(uint16_t cmd_code, uint16_t metric_id, uint32_t value)
+{
+    SendScalarData(cmd_code, 0x80U, metric_id, value);
+}
+
+/* ACK уже отправлен общим dispatcher. Только неизменяющий RAM snapshot. */
+static bool HandleEngineeringDiagnostics(const ParsedCanCommand_t *request)
+{
+    uint16_t cmd = request->cmd_code;
+    if (cmd != CAN_CMD_SRV_GET_DIAG_CAPS && cmd != CAN_CMD_SRV_GET_DIAG_BLOCK) return false;
+    if (request->data_len != 5U) {
+        CAN_SendNackPublic(cmd, CAN_ERR_INVALID_PARAM);
+        return true;
+    }
+    if (cmd == CAN_CMD_SRV_GET_DIAG_CAPS) {
+        if (request->device_id || request->data[0] || request->data[1] ||
+            request->data[2] || request->data[3] || request->data[4]) {
+            CAN_SendNackPublic(cmd, CAN_ERR_INVALID_PARAM);
+            return true;
+        }
+        const uint8_t caps[6] = {
+            (uint8_t)CAN_DIAG_BLOCK_MOTION_TMC, (uint8_t)(CAN_DIAG_BLOCK_MOTION_TMC >> 8),
+            CAN_DIAG_MOTION_TMC_SCHEMA_VERSION,
+            CAN_DIAG_CAP_FLAG_READ_ONLY | CAN_DIAG_CAP_FLAG_INDEXED | CAN_DIAG_CAP_FLAG_EXPERIMENTAL,
+            0, 0
+        };
+        CAN_SendData(cmd, 0x00U, caps, sizeof(caps));
+        const uint8_t trace_caps[6] = {0x06, 0xD1, CAN_DIAG_MOTION_UART_TRACE_SCHEMA_VERSION, 0x83, 0, 0};
+        CAN_SendData(cmd, 0x81U, trace_caps, sizeof(trace_caps));
+    } else {
+        uint16_t block = request->device_id | ((uint16_t)request->data[0] << 8);
+        uint8_t motor_id = request->data[1];
+        if ((block != CAN_DIAG_BLOCK_MOTION_TMC && block != CAN_DIAG_BLOCK_MOTION_UART_TRACE) || request->data[2] || request->data[3] || request->data[4]) {
+            CAN_SendNackPublic(cmd, CAN_ERR_INVALID_PARAM);
+            return true;
+        }
+        TMC_Diagnostics_t snapshot;
+        if (!TMCManager_GetDiagnostics(motor_id, &snapshot)) {
+            CAN_SendNackPublic(cmd, CAN_ERR_INVALID_DEVICE_ID);
+            return true;
+        }
+        if (block == CAN_DIAG_BLOCK_MOTION_UART_TRACE) {
+            TMC2209_Trace_t trace;
+            if (!TMCManager_GetTrace(motor_id, &trace)) {
+                CAN_SendNackPublic(cmd, CAN_ERR_INVALID_DEVICE_ID);
+                return true;
+            }
+            for (uint8_t i = 0; i < 12U; ++i)
+                SendScalarData(cmd, i == 11U ? 0x8bU : i, i + 1U, trace.words[i]);
+            CAN_SendDone(cmd, 0);
+            return true;
+        }
+        const uint32_t values[] = {motor_id, snapshot.state, snapshot.ready, snapshot.stage,
+            snapshot.hal_status, snapshot.valid_mask, snapshot.ioin, snapshot.gconf,
+            snapshot.chopconf, snapshot.ifcnt, snapshot.gstat, snapshot.drv_status};
+        const uint16_t items[] = {CAN_DIAG_TMC_ITEM_MOTOR_ID, CAN_DIAG_TMC_ITEM_STATE,
+            CAN_DIAG_TMC_ITEM_READY, CAN_DIAG_TMC_ITEM_STAGE, CAN_DIAG_TMC_ITEM_HAL_STATUS,
+            CAN_DIAG_TMC_ITEM_VALID_MASK, CAN_DIAG_TMC_ITEM_IOIN, CAN_DIAG_TMC_ITEM_GCONF,
+            CAN_DIAG_TMC_ITEM_CHOPCONF, CAN_DIAG_TMC_ITEM_IFCNT, CAN_DIAG_TMC_ITEM_GSTAT,
+            CAN_DIAG_TMC_ITEM_DRV_STATUS};
+        for (uint8_t i = 0; i < sizeof(items) / sizeof(items[0]); ++i) {
+            uint8_t sequence = i;
+            if (i + 1U == sizeof(items) / sizeof(items[0])) sequence |= 0x80U;
+            SendScalarData(cmd, sequence, items[i], values[i]);
+        }
+    }
+    CAN_SendDone(cmd, 0);
+    return true;
 }
 
 void app_start_task_dispatcher(void *argument)
@@ -63,6 +135,8 @@ void app_start_task_dispatcher(void *argument)
 
         // 2. --- ЗОЛОТОЙ ЭТАЛОН: Немедленное подтверждение приема (ACK) ---
         CAN_SendAck(parsed.cmd_code);
+
+        if (HandleEngineeringDiagnostics(&parsed)) continue;
 
         // 3. Распределение команд по группам
         switch (parsed.cmd_code) {

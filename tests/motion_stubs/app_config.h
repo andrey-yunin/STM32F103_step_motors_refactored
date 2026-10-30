@@ -1,0 +1,2 @@
+#define MOTOR_COUNT 8
+#define MOTOR_ID_INVALID 255

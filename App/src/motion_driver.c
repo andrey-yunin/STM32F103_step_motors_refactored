@@ -130,6 +130,7 @@ static bool MotionDriver_ConfigurePwm(uint8_t motor_id, uint32_t frequency)
 
     // Немедленно загружаем новые PSC/ARR перед стартом PWM.
     htim->Instance->EGR = TIM_EGR_UG;
+    htim->Instance->SR = 0U;
 
     return true;
 }
@@ -205,11 +206,11 @@ void MotionDriver_SetDirection(uint8_t motor_id, bool forward)
  * @param frequency Desired step frequency in Hz.
  * @note Assumes timer clock is 64MHz. Duty cycle is fixed at 50%.
  */
-void MotionDriver_StartMotor(uint8_t motor_id, uint32_t frequency)
+bool MotionDriver_StartMotor(uint8_t motor_id, uint32_t frequency)
 {
     if (motor_id >= MOTOR_COUNT || frequency == 0) {
         MotionDriver_StopMotor(motor_id); // Stop if invalid input
-        return;
+        return false;
     }
 
     s_finite_active[motor_id] = false;
@@ -217,13 +218,17 @@ void MotionDriver_StartMotor(uint8_t motor_id, uint32_t frequency)
 
     if (!MotionDriver_ConfigurePwm(motor_id, frequency)) {
         MotionDriver_StopMotor(motor_id);
-        return;
+        return false;
     }
 
     TIM_HandleTypeDef* htim = MotorStepTimHandles[motor_id];
     uint32_t channel = MotorStepTimChannels[motor_id];
     HAL_GPIO_WritePin(MotorEnPorts[motor_id], MotorEnPins[motor_id], GPIO_PIN_RESET);
-    HAL_TIM_PWM_Start(htim, channel);
+    if (HAL_TIM_PWM_Start(htim, channel) != HAL_OK) {
+        MotionDriver_StopMotor(motor_id);
+        return false;
+    }
+    return true;
 }
 
 bool MotionDriver_StartFinite(uint8_t motor_id, uint32_t frequency, uint32_t steps)

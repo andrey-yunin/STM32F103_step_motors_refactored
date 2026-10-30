@@ -23,8 +23,10 @@
 typedef enum {
     TMC2209_GCONF       = 0x00, // Global Configuration
     TMC2209_GSTAT       = 0x01, // Global Status
-    TMC2209_IOIN        = 0x04, // Input/Output pins
-    TMC2209_PWMCONF     = 0x30, // PWM Configuration
+    TMC2209_IFCNT       = 0x02, // Счётчик принятых UART-записей
+    TMC2209_NODECONF    = 0x03, // SENDDELAY
+    TMC2209_IOIN        = 0x06, // Input/Output pins (0x04 — OTP_PROG!)
+    TMC2209_PWMCONF     = 0x70, // PWM Configuration
     TMC2209_CHOPCONF    = 0x6C, // Chopper Configuration
     TMC2209_DRVSTATUS   = 0x6F, // Driver Status
     TMC2209_VACTUAL     = 0x22, // Actual motor velocity
@@ -32,20 +34,27 @@ typedef enum {
     TMC2209_MSCURACT    = 0x6B, // Microstep current actual
     TMC2209_SGTHRS      = 0x40, // StallGuard threshold
     TMC2209_COOLCONF    = 0x42, // CoolStep configuration
-    TMC2209_TPOWERDOWN  = 0x31, // Delay before power down
+    TMC2209_TPOWERDOWN  = 0x11, // Delay before power down
     TMC2209_IHOLD_IRUN  = 0x10, // Current settings
 } TMC2209_Register_t;
 
-// Структура для инициализации и управления драйвером
+/* Last completed exchange per handle. words: sequence, addr/reg/write,
+ * arm/tx/result/reply-offset (FF = unavailable), tx/rx lengths, elapsed ms,
+ * HAL errors, TX[8], RX[12], reserved. Byte arrays packed little endian. */
+typedef struct { uint32_t words[12]; } TMC2209_Trace_t;
 typedef struct {
-    UART_HandleTypeDef* huart;      // Хэндл UART, к которому подключен драйвер
-    uint8_t             slave_addr; // Адрес драйвера на UART шине (0-3, по пинам MS1/MS2)
+    UART_HandleTypeDef *huart;
+    uint8_t slave_addr;
+    TMC2209_Trace_t trace;
 } TMC2209_Handle_t;
+void TMC2209_GetTrace(const TMC2209_Handle_t *htmc, TMC2209_Trace_t *out);
 
 // Прототипы функций драйвера
 HAL_StatusTypeDef TMC2209_Init(TMC2209_Handle_t* htmc, UART_HandleTypeDef* huart, uint8_t slave_addr);
 HAL_StatusTypeDef TMC2209_WriteRegister(TMC2209_Handle_t* htmc, TMC2209_Register_t reg, uint32_t value);
 HAL_StatusTypeDef TMC2209_ReadRegister(TMC2209_Handle_t* htmc, TMC2209_Register_t reg, uint32_t* value);
+// Единственный владелец UART — TMC manager. IRQ UART должен быть включён.
+HAL_StatusTypeDef TMC2209_WriteVerified(TMC2209_Handle_t* htmc, TMC2209_Register_t reg, uint32_t value);
 
 // Дополнительные функции (будут реализованы позже)
 HAL_StatusTypeDef TMC2209_SetMotorCurrent(TMC2209_Handle_t* htmc, uint8_t run_current_percent, uint8_t hold_current_percent);

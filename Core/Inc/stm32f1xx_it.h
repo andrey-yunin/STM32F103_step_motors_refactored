@@ -57,6 +57,9 @@ void CAN1_RX1_IRQHandler(void);
 void TIM2_IRQHandler(void);
 void TIM4_IRQHandler(void);
 /* USER CODE BEGIN EFP */
+void TIM1_CC_IRQHandler(void);
+void USART1_IRQHandler(void);
+void USART2_IRQHandler(void);
 void CAN1_SCE_IRQHandler(void);
 
 /* USER CODE END EFP */

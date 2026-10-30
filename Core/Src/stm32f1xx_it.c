@@ -82,6 +82,8 @@ extern TIM_HandleTypeDef htim2;
 extern TIM_HandleTypeDef htim4;
 
 /* USER CODE BEGIN EV */
+extern UART_HandleTypeDef huart1;
+extern UART_HandleTypeDef huart2;
 
 /* USER CODE END EV */
 
@@ -245,6 +247,21 @@ void TIM4_IRQHandler(void)
 }
 
 /* USER CODE BEGIN 1 */
+void TIM1_CC_IRQHandler(void)
+{
+  HAL_TIM_IRQHandler(&htim1);
+}
+
+void USART2_IRQHandler(void)
+{
+  HAL_UART_IRQHandler(&huart2);
+}
+
+void USART1_IRQHandler(void)
+{
+  HAL_UART_IRQHandler(&huart1);
+}
+
 // Callback вызывается HAL, когда в CAN FIFO0 появился новый принятый фрейм.
 //
 // Важно:

@@ -209,6 +209,8 @@ void app_start_task_motion_controller(void *argument)
                 continue;
             }
 
+            // STEP/DIR/EN работают независимо от результата UART-диагностики.
+            // BUSY ниже означает только занятую ось или общий таймер.
             uint8_t group_id = MotionController_GetGroupByMotor(motor_id);
 
             // --- Проверка занятости мотора ---
@@ -319,7 +321,13 @@ void app_start_task_motion_controller(void *argument)
 
                     motor_states[motor_id].current_speed_steps_per_sec = received_motion_cmd.speed_steps_per_sec;
                     g_motor_active[motor_id] = true;
-                    MotionDriver_StartMotor(motor_id, received_motion_cmd.speed_steps_per_sec);
+                    if (!MotionDriver_StartMotor(motor_id, received_motion_cmd.speed_steps_per_sec)) {
+                        g_motor_active[motor_id] = false;
+                        motor_states[motor_id].current_speed_steps_per_sec = 0;
+                        MotionController_ResetGroup(&g_motion_groups[group_id]);
+                        CAN_SendNackPublic(cmd_code, CAN_ERR_INVALID_PARAM);
+                        break;
+                    }
                 }
 
                 CAN_SendDone(cmd_code, device_id);

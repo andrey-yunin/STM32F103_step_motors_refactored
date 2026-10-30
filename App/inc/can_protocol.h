@@ -57,6 +57,52 @@
 #define CAN_CMD_SRV_FACTORY_RESET       0xF006  // Сброс к заводским настройкам
 #define CAN_CMD_SRV_GET_STATUS          0xF007  // Получить диагностический статус
 
+// Общий optional engineering contract из dds240_global_config.h.
+#define CAN_CMD_SRV_GET_DIAG_CAPS  0xF020U
+#define CAN_CMD_SRV_GET_DIAG_BLOCK 0xF021U
+#define CAN_DIAG_BLOCK_MOTION_TMC  0xD103U
+#define CAN_DIAG_CAP_FLAG_READ_ONLY 0x01U
+#define CAN_DIAG_CAP_FLAG_INDEXED   0x02U
+#define CAN_DIAG_CAP_FLAG_EXPERIMENTAL 0x80U
+
+/* MOTION_TMC schema v1: startup snapshot, index=motor_id; current implementation index 0 only.
+ * DATA sequence is 0..N-1, EOT (0x80) only on the last record; DONE selector=0.
+ * F020 request bytes 2..7 are zero. F021 flags/reserved are zero.
+ * The block reads RAM only: no UART writes, retries or register reads on request.
+ * Register values are meaningful only when the matching VALID_MASK bit is set.
+ */
+#define CAN_DIAG_MOTION_TMC_SCHEMA_VERSION          1U
+#define CAN_DIAG_TMC_ITEM_MOTOR_ID                  0x0001U
+#define CAN_DIAG_TMC_ITEM_STATE                     0x0002U
+#define CAN_DIAG_TMC_ITEM_READY                     0x0003U
+#define CAN_DIAG_TMC_ITEM_STAGE                     0x0004U
+#define CAN_DIAG_TMC_ITEM_HAL_STATUS                0x0005U
+#define CAN_DIAG_TMC_ITEM_VALID_MASK                0x0006U
+#define CAN_DIAG_TMC_ITEM_IOIN                      0x0007U
+#define CAN_DIAG_TMC_ITEM_GCONF                     0x0008U
+#define CAN_DIAG_TMC_ITEM_CHOPCONF                  0x0009U
+#define CAN_DIAG_TMC_ITEM_IFCNT                     0x000AU
+#define CAN_DIAG_TMC_ITEM_GSTAT                     0x000BU
+#define CAN_DIAG_TMC_ITEM_DRV_STATUS                0x000CU
+#define CAN_DIAG_TMC_STATE_NOT_STARTED             0U
+#define CAN_DIAG_TMC_STATE_CONFIGURING             1U
+#define CAN_DIAG_TMC_STATE_READY                   2U
+#define CAN_DIAG_TMC_STATE_FAILED                  3U
+#define CAN_DIAG_TMC_VALID_IOIN                    (1U << 0)
+#define CAN_DIAG_TMC_VALID_GCONF                   (1U << 1)
+#define CAN_DIAG_TMC_VALID_CHOPCONF                (1U << 2)
+#define CAN_DIAG_TMC_VALID_IFCNT                   (1U << 3)
+#define CAN_DIAG_TMC_VALID_GSTAT                   (1U << 4)
+#define CAN_DIAG_TMC_VALID_DRV_STATUS              (1U << 5)
+/* STAGE: 0 not started, 1 handle init, 2 IOIN/version/ENN, 3 NODECONF,
+ * 4 GCONF read, 5 GCONF write, 6 GCONF verification, 7 IHOLD_IRUN,
+ * 8 TPOWERDOWN, 9 VACTUAL, 10 CHOPCONF read, 11 CHOPCONF write,
+ * 12 microstep setup, 13 CHOPCONF verification, 14 IFCNT, 15 GSTAT,
+ * 16 DRV_STATUS, 17 complete. HAL_STATUS: 0 OK, 1 ERROR, 2 BUSY, 3 TIMEOUT.
+ * STATE determines startup outcome; during CONFIGURING HAL_STATUS may be from
+ * the preceding operation. READY is configuration readiness, not physical motion.
+ */
+
 // Магический ключ для опасных операций
 #define SRV_MAGIC_REBOOT                0x55AA  // Ключ для перезагрузки
 #define SRV_MAGIC_FACTORY_RESET         0xDEAD  // Ключ для Factory Reset
@@ -124,5 +170,9 @@ void CAN_SendNackPublic(uint16_t cmd_code, uint16_t error_code);
 void CAN_SendDone(uint16_t cmd_code, uint8_t device_id);
 void CAN_SendData(uint16_t cmd_code, uint8_t sequence_info,
                   const uint8_t *data, uint8_t len);
+
+/* D106 v1: last completed UART exchange, twelve scalar records (see protocol doc). */
+#define CAN_DIAG_BLOCK_MOTION_UART_TRACE 0xD106U
+#define CAN_DIAG_MOTION_UART_TRACE_SCHEMA_VERSION 1U
 
 #endif /* CAN_PROTOCOL_H_ */

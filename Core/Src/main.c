@@ -172,6 +172,7 @@ int main(void)
   MX_USART2_UART_Init();
   MX_IWDG_Init();
   /* USER CODE BEGIN 2 */
+  MotionDriver_AllSafe();
 
   AppConfig_Init();
 
@@ -660,6 +661,7 @@ static void MX_GPIO_Init(void)
 {
   GPIO_InitTypeDef GPIO_InitStruct = {0};
   /* USER CODE BEGIN MX_GPIO_Init_1 */
+  MotionDriver_AllSafe();
 
   /* USER CODE END MX_GPIO_Init_1 */
 
@@ -673,12 +675,14 @@ static void MX_GPIO_Init(void)
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOA, EN_1_Pin|EN_2_Pin|EN_3_Pin|EN_4_Pin
-                          |EN_5_Pin|EN_6_Pin, GPIO_PIN_RESET);
+                          |EN_5_Pin|EN_6_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOB, DIR_1_Pin|DIR_2_Pin|DIR_3_Pin|DIR_7_Pin
-                          |DIR_8_Pin|EN_7_Pin|EN_8_Pin|DIR_4_Pin
+                          |DIR_8_Pin|DIR_4_Pin
                           |DIR_5_Pin|DIR_6_Pin, GPIO_PIN_RESET);
+
+  HAL_GPIO_WritePin(GPIOB, EN_7_Pin|EN_8_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pins : GPIO_Pin STB_Pin */
   GPIO_InitStruct.Pin = GPIO_Pin|STB_Pin;

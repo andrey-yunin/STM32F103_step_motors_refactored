@@ -232,6 +232,8 @@ void HAL_TIM_Base_MspInit(TIM_HandleTypeDef* htim_base)
     /* Peripheral clock enable */
     __HAL_RCC_TIM1_CLK_ENABLE();
     /* USER CODE BEGIN TIM1_MspInit 1 */
+    HAL_NVIC_SetPriority(TIM1_CC_IRQn, 5, 0);
+    HAL_NVIC_EnableIRQ(TIM1_CC_IRQn);
 
     /* USER CODE END TIM1_MspInit 1 */
   }
@@ -324,6 +326,7 @@ void HAL_TIM_Base_MspDeInit(TIM_HandleTypeDef* htim_base)
     /* Peripheral clock disable */
     __HAL_RCC_TIM1_CLK_DISABLE();
     /* USER CODE BEGIN TIM1_MspDeInit 1 */
+    HAL_NVIC_DisableIRQ(TIM1_CC_IRQn);
 
     /* USER CODE END TIM1_MspDeInit 1 */
   }
@@ -379,6 +382,8 @@ void HAL_UART_MspInit(UART_HandleTypeDef* huart)
     __HAL_AFIO_REMAP_USART1_ENABLE();
 
     /* USER CODE BEGIN USART1_MspInit 1 */
+    HAL_NVIC_SetPriority(USART1_IRQn, 6, 0);
+    HAL_NVIC_EnableIRQ(USART1_IRQn);
 
     /* USER CODE END USART1_MspInit 1 */
   }
@@ -406,6 +411,8 @@ void HAL_UART_MspInit(UART_HandleTypeDef* huart)
     HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
     /* USER CODE BEGIN USART2_MspInit 1 */
+    HAL_NVIC_SetPriority(USART2_IRQn, 6, 0);
+    HAL_NVIC_EnableIRQ(USART2_IRQn);
 
     /* USER CODE END USART2_MspInit 1 */
   }
@@ -435,6 +442,7 @@ void HAL_UART_MspDeInit(UART_HandleTypeDef* huart)
     HAL_GPIO_DeInit(GPIOB, GPIO_PIN_6|GPIO_PIN_7);
 
     /* USER CODE BEGIN USART1_MspDeInit 1 */
+    HAL_NVIC_DisableIRQ(USART1_IRQn);
 
     /* USER CODE END USART1_MspDeInit 1 */
   }
@@ -453,6 +461,7 @@ void HAL_UART_MspDeInit(UART_HandleTypeDef* huart)
     HAL_GPIO_DeInit(GPIOA, GPIO_PIN_2|GPIO_PIN_3);
 
     /* USER CODE BEGIN USART2_MspDeInit 1 */
+    HAL_NVIC_DisableIRQ(USART2_IRQn);
 
     /* USER CODE END USART2_MspDeInit 1 */
   }
