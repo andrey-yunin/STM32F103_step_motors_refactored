@@ -43,7 +43,7 @@ void AppConfig_Init(void);
 /**
  * @brief Сброс настроек к заводским (очистка Flash).
  */
-void AppConfig_FactoryReset(void);
+bool AppConfig_FactoryReset(void);
 
 /**
  * @brief Безопасное чтение логического ID для физического индекса драйвера.

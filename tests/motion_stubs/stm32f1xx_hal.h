@@ -48,6 +48,9 @@ extern GPIO_TypeDef gpioa,gpiob;
 #define __HAL_RCC_TIM2_CLK_ENABLE() ((void)0)
 #define __disable_irq() ((void)0)
 #define __enable_irq() ((void)0)
+
+static inline uint32_t __get_PRIMASK(void) { return 0U; }
+static inline void __set_PRIMASK(uint32_t primask) { (void)primask; }
 #define HAL_OK 0
 void HAL_GPIO_WritePin(GPIO_TypeDef *,uint16_t,int);
 int HAL_TIM_PWM_Start(TIM_HandleTypeDef *,uint32_t);

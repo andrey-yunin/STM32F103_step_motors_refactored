@@ -37,10 +37,16 @@ Next session prompt:
 /home/andrey/STM32CubeIDE/workspace_1.19.0/DDS-240_readme/DDS-240_eko_system/NEXT_SESSION_PROMPT.md
 ```
 
-Step motors status report:
+Step motors executor report:
 
 ```text
-/home/andrey/STM32CubeIDE/workspace_1.19.0/DDS-240_readme/DDS-240_eko_system/Step_motors/project_report.md
+/home/andrey/STM32CubeIDE/workspace_1.19.0/DDS-240_readme/DDS-240_eko_system/Step_motors/STEP_MOTORS_EXECUTOR_REPORT.md
+```
+
+Step motors unification matrix:
+
+```text
+/home/andrey/STM32CubeIDE/workspace_1.19.0/DDS-240_readme/DDS-240_eko_system/Step_motors/STEP_MOTORS_UNIFICATION_MATRIX.md
 ```
 
 Step motors quick entry:
@@ -49,10 +55,10 @@ Step motors quick entry:
 /home/andrey/STM32CubeIDE/workspace_1.19.0/DDS-240_readme/DDS-240_eko_system/Step_motors/NEXT_SESSION_PROMPT.md
 ```
 
-Step motors refactoring plan:
+Step motors executor refactoring plan:
 
 ```text
-/home/andrey/STM32CubeIDE/workspace_1.19.0/DDS-240_readme/DDS-240_eko_system/Step_motors/refactoring_plan.md
+/home/andrey/STM32CubeIDE/workspace_1.19.0/DDS-240_readme/DDS-240_eko_system/Step_motors/STEP_MOTORS_EXECUTOR_REFACTORING_PLAN.md
 ```
 
 Step motors architecture guide:
@@ -94,9 +100,9 @@ A failed startup needs diagnosis and reset; it does not silently retry writes.
 Host regression commands (no hardware):
 
 ```sh
-gcc -std=c11 -Wall -Wextra -Werror -Itests/stubs -IApp/inc -IApp/inc/tasks tests/test_tmc2209.c App/src/tmc2209_driver.c -o /tmp/test_tmc2209
+gcc -std=c11 -Wall -Wextra -Werror -Itests/stubs -IApp/inc -IApp/inc/tasks -IApp/inc/drivers tests/test_tmc2209.c App/src/drivers/tmc2209_driver.c -o /tmp/test_tmc2209
 /tmp/test_tmc2209
-gcc -std=c11 -Wall -Wextra -Werror -Itests/motion_stubs -IApp/inc tests/test_motion_driver.c App/src/motion_driver.c -o /tmp/test_motion_driver
+gcc -std=c11 -Wall -Wextra -Werror -Itests/motion_stubs -IApp/inc -IApp/inc/drivers tests/test_motion_driver.c App/src/drivers/motion_driver.c -o /tmp/test_motion_driver
 /tmp/test_motion_driver
 ```
 
@@ -275,3 +281,72 @@ motion controller и PWM driver PASS; Debug build PASS (text52120/data256/bss147
 Studio585 tests PASS. Это программная проверка, не аппаратная приёмка.
 Открытый исторический пункт CAN1_SCE_IRQHandler остаётся отдельной задачей:
 обработчик отсутствует в Core/Src/stm32f1xx_it.c; не считать его исправленным.
+
+## 2026-11-12 — MU-02: структура App приведена к общей схеме
+
+Драйверы перенесены в `App/inc/drivers` и `App/src/drivers`; добавлена
+safety-граница `app_safety.h/.c` (делегирует `MotionDriver_AllSafe`, без
+латча сброса); `tasks/watchdog.h` переименован в `tasks/task_watchdog.h`;
+удалён legacy `command_protocol.h` (внутренний `CommandID_t` перенесён в
+`task_motion_controller.h`); удалена orphan-очередь `tmc_manager_queue` и
+`TMC_MANAGER_QUEUE_LEN`. Include-пути, тесты и команды в этом README
+обновлены на новые пути.
+
+Проверено: clean Debug build PASS, 0 ошибок, 0 предупреждений;
+text=52108, data=256, bss=14768. ELF пересобран. HOST-прогон после MU-02
+не выполнялся; на плате ничего не прошивалось и не запускалось.
+BENCH остаётся N/A до готовности новой платы (MU-00).
+Изменения `.cproject` и `Debug/` локальные: оба пути в `.gitignore`.
+
+
+## 2026-11-12 — MU-03: CAN-транспорт приведён к контракту
+
+- Два аппаратных банка bxCAN: bank0 — broadcast COMMAND, bank1 — прямой COMMAND на runtime NodeID; маска `(0x03FF<<19)|(1<<2)`; `CAN_UpdateDirectFilter` вызывается при F005 до DONE.
+- Канонический порядок программной валидации: IDE → RTR → DLC → type → src → dst. RTR и source отбрасываются без счётчиков; останов на первой ошибке без ACK/NACK.
+- Добавлен `CAN1_SCE_IRQHandler` (`HAL_CAN_IRQHandler`), поэтому счётчики ошибок CAN в F007 получают обработчик.
+- PRIMASK save/restore в снимке диагностики и при consume completion.
+- F005: группа `0x20..0x2F`, NACK `0x0006`, RAM-only, обновление bank1 до DONE.
+- Clean Debug build: 0 ошибок / 0 предупреждений, text=52304, data=256, bss=14768. HOST не прогонялся, BENCH не выполнялся (стенд после переделки платы).
+
+`CAN_SendDataFragmented` не добавлялся: текущие последовательности DATA корректны, helper не требуется контрактом.
+
+
+## 2026-11-12 — MU-04: сервисы, конфигурация, Flash
+
+- F001 уже отдавал `CAN_DEVICE_TYPE_MOTION 0x01`; дублирующие
+  `CAN_DEVICE_TYPE_MOTOR/THERMO` из `app_config.h` удалены.
+- `AppConfig_Init`: проверка `osMutexNew` (NULL → `Error_Handler`),
+  проверка группы NodeID `0x20..0x2F` при загрузке; невалидная запись
+  заменяется RAM-дефолтами без автоматической записи во Flash.
+- `AppConfig_Commit`: Unlock/Erase/Program/Lock входят в итоговый результат.
+- `AppConfig_FactoryReset` возвращает bool; ошибка Flash → NACK
+  `CAN_ERR_FLASH_WRITE` без сброса. PrepareReset/латч остаются в MU-05.
+- Clean Debug build: 0 ошибок / 0 предупреждений, text=52456, data=256,
+  bss=14768. HOST не прогонялся, BENCH не выполнялся (стенд после
+  переделки платы).
+
+## 2026-11-12 — MU-05: safety, reset, watchdog
+
+- `AppSafety_PrepareReset()` / `AppSafety_IsResetPending()`: латч сброса и safe-state одной операцией под сохранённым PRIMASK; после латча новые активации запрещены до перезапуска MCU.
+- F002/F006: ключ → `PrepareReset` → DONE/NACK → ограниченное ожидание слива TX (`CAN_WaitTxIdle(100)`) → сброс. При ошибке F006 — NACK FLASH_WRITE без сброса; латч остаётся.
+- Motion controller: при латче отменяет движения, сбрасывает владение TIM-группами и не отправляет поздний DONE; STOP остаётся разрешён.
+- `Error_Handler`: IRQ off → `AppSafety_AllSafe()` → DSB/ISB → ожидание сброса. Watchdog при потере прогресса вызывает `Error_Handler`, а не крутит RTOS-цикл.
+- Приоритет `task_watchdog` поднят до 56 (выше CAN 40); TMC исключён из критических клиентов до MU-07 (heartbeat = прогресс, не существование задачи).
+- Debug clean build: 0 ошибок, 0 предупреждений; text=52952 / data=256 / bss=14768. HOST/BENCH NOT RUN; прошивка не заливалась.
+
+## 2026-11-12 — MU-06: Motion domain
+
+- Валидация скорости выполняется до мутации planner; отклонённая команда не меняет target/direction/steps_to_go.
+- `delta == 0` → DONE без запуска STEP.
+- HOME отклоняется NACK `INVALID_PARAM`: без процедуры/датчика ложный DONE не выдаётся.
+- START_CONTINUOUS со speed=0 → NACK `INVALID_PARAM` (не состояние «вращение»).
+- `default` контроллера → NACK `UNKNOWN_CMD`; каждый путь имеет терминальный ответ.
+- Зафиксированные ограничения: ускорение не реализовано (постоянная частота); позиция в RAM, после reset относительное движение считается от нуля; ошибка UART не блокирует STEP/DIR/EN (решение 27.10.2026).
+- Debug clean build: 0 ошибок, 0 предупреждений; text=52968 / data=256 / bss=14768. HOST/BENCH NOT RUN; прошивка не заливалась.
+
+## 2026-11-12 — Post-MU-06: hardening и HOST
+
+- Reset-латч: отмена движения выполняется один раз (abort-once), а не каждые 10 мс при задержанном сбросе.
+- HOST-обвязка: добавлен include `App/inc/drivers` для engineering-diagnostics; в motion-стабы добавлены `__get_PRIMASK`/`__set_PRIMASK`, в тест контроллера — стаб `AppSafety_IsResetPending`.
+- HOST 4/4 PASS: check_motion_controller.py, check_engineering_diagnostics.py, test_tmc2209, test_motion_driver.
+- Debug clean build: 0 ошибок, 0 предупреждений; text=53000 / data=256 / bss=14768. BENCH NOT RUN; прошивка не заливалась.

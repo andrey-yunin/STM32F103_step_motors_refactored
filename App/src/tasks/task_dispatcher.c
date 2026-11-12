@@ -22,11 +22,12 @@
 #include "app_queues.h"
 #include "app_config.h"
 #include "app_flash.h"
+#include "app_safety.h"
 #include "task_dispatcher.h"
 #include "task_can_handler.h"
 #include "can_protocol.h"
-#include "command_protocol.h"
-#include "watchdog.h"
+#include "task_motion_controller.h"
+#include "task_watchdog.h"
 #include "task_tmc2209_manager.h"
 #include "tmc2209_driver.h"
 
@@ -174,10 +175,10 @@ void app_start_task_dispatcher(void *argument)
                 // Согласно Директиве 2.0: speed упакован как speed >> 2 (в байте data[4])
                 motion_cmd.speed_steps_per_sec = (uint32_t)parsed.data[4] << 2;
             } else if (parsed.cmd_code == CAN_CMD_MOTOR_HOME) {
-                uint16_t speed = (uint16_t)(parsed.data[0] | ((uint16_t)parsed.data[1] << 8));
-                motion_cmd.command_id = CMD_MOVE_ABSOLUTE;
-                motion_cmd.steps = 0;
-                motion_cmd.speed_steps_per_sec = (uint32_t)speed;
+                // HOME без процедуры/датчика нельзя объявить выполненной:
+                // команда отклоняется, пока не определён физический homing.
+                CAN_SendNackPublic(parsed.cmd_code, CAN_ERR_INVALID_PARAM);
+                continue;
             } else if (parsed.cmd_code == CAN_CMD_MOTOR_START_CONTINUOUS) {
                 motion_cmd.command_id = CMD_SET_SPEED;
                 // Согласно Директиве 2.0: speed упакован как speed / 100
@@ -227,8 +228,9 @@ void app_start_task_dispatcher(void *argument)
         case CAN_CMD_SRV_REBOOT: {
             uint16_t key = (uint16_t)(parsed.data[0] | ((uint16_t)parsed.data[1] << 8));
             if (key == SRV_MAGIC_REBOOT) {
+                AppSafety_PrepareReset();
                 CAN_SendDone(parsed.cmd_code, 0);
-                osDelay(100);
+                (void)CAN_WaitTxIdle(100U);
                 NVIC_SystemReset();
             } else {
                 CAN_SendNackPublic(parsed.cmd_code, CAN_ERR_INVALID_KEY);
@@ -248,10 +250,15 @@ void app_start_task_dispatcher(void *argument)
         case CAN_CMD_SRV_FACTORY_RESET: {
             uint16_t key = (uint16_t)(parsed.data[0] | ((uint16_t)parsed.data[1] << 8));
             if (key == SRV_MAGIC_FACTORY_RESET) {
-                AppConfig_FactoryReset();
-                CAN_SendDone(parsed.cmd_code, 0);
-                osDelay(100);
-                NVIC_SystemReset();
+                // Safe-state до стирания Flash; латч запрещает новые активации.
+                AppSafety_PrepareReset();
+                if (AppConfig_FactoryReset()) {
+                    CAN_SendDone(parsed.cmd_code, 0);
+                    (void)CAN_WaitTxIdle(100U);
+                    NVIC_SystemReset();
+                } else {
+                    CAN_SendNackPublic(parsed.cmd_code, CAN_ERR_FLASH_WRITE);
+                }
             } else {
                 CAN_SendNackPublic(parsed.cmd_code, CAN_ERR_INVALID_KEY);
             }
@@ -259,11 +266,13 @@ void app_start_task_dispatcher(void *argument)
         }
 
         case CAN_CMD_SRV_SET_NODE_ID: {
-            if (parsed.device_id >= 0x02 && parsed.device_id <= 0x7F && parsed.device_id != 0x10) {
-                AppConfig_SetPerformerID(parsed.device_id);
+            // Motion family: 0x20..0x2F. Persistence выполняется отдельно через F003.
+            if (parsed.device_id >= 0x20 && parsed.device_id <= 0x2F) {
+                AppConfig_SetPerformerID(parsed.device_id);          // RAM
+                CAN_UpdateDirectFilter(parsed.device_id);            // bank1 до DONE
                 CAN_SendDone(parsed.cmd_code, parsed.device_id);
             } else {
-                CAN_SendNackPublic(parsed.cmd_code, CAN_ERR_UNKNOWN_CMD);
+                CAN_SendNackPublic(parsed.cmd_code, CAN_ERR_INVALID_PARAM);
             }
             break;
         }

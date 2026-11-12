@@ -20,7 +20,7 @@
 #include "app_flash.h"
 #include "app_config.h"
 #include "can_protocol.h"
-#include "watchdog.h"
+#include "task_watchdog.h"
 
 // --- Внешние хэндлы HAL ---
 extern CAN_HandleTypeDef hcan;
@@ -28,6 +28,12 @@ extern CAN_HandleTypeDef hcan;
 // Счетчики CAN diagnostics живут в transport layer: здесь видны drops,
 // переполнения очередей, TX mailbox/HAL errors и CAN fault states.
 static volatile CanDiagnostics_t g_can_diag;
+
+// Два аппаратных банка bxCAN:
+// bank0 — broadcast COMMAND, bank1 — direct COMMAND на текущий NodeID.
+// Маска проверяет dst[23:16], msg_type[25:24] и IDE; priority/src/RTR не маскируются.
+#define CAN_FILTER_MSGTYPE_DST_MASK (0x03FFUL << 19)
+#define CAN_FILTER_IDE              (1UL << 2)
 
 // Единая точка постановки CAN-фрейма в TX-очередь.
 //
@@ -44,15 +50,38 @@ static void CAN_QueueTxFrame(CanTxFrame_t *tx)
     }
 }
 
+bool CAN_WaitTxIdle(uint32_t timeout_ms)
+{
+    const uint32_t start = osKernelGetTickCount();
+    const uint32_t timeout_ticks = (timeout_ms * osKernelGetTickFreq()) / 1000U;
+
+    // Ждём, пока очередь пуста и все три mailbox свободны. Это не гарантирует
+    // доставку на шину, но исключает потерю уже поставленного DONE/NACK
+    // из-за немедленного NVIC_SystemReset.
+    while ((osKernelGetTickCount() - start) < timeout_ticks) {
+        if (osMessageQueueGetCount(can_tx_queueHandle) == 0U &&
+            HAL_CAN_GetTxMailboxesFreeLevel(&hcan) == 3U) {
+            return true;
+        }
+        osDelay(1U);
+    }
+
+    return (osMessageQueueGetCount(can_tx_queueHandle) == 0U &&
+            HAL_CAN_GetTxMailboxesFreeLevel(&hcan) == 3U);
+}
+
 void CAN_Diagnostics_GetSnapshot(CanDiagnostics_t *out)
 {
     if (out == NULL) {
         return;
     }
 
+    // Снимок должен сохранить исходное состояние IRQ: если вызывающий код
+    // уже запретил прерывания, мы не имеем права их включать.
+    uint32_t primask = __get_PRIMASK();
     __disable_irq();
     memcpy(out, (const void *)&g_can_diag, sizeof(CanDiagnostics_t));
-    __enable_irq();
+    __set_PRIMASK(primask);
 }
 
 void CAN_Diagnostics_RecordRxQueueOverflow(void)
@@ -204,6 +233,44 @@ void CAN_SendData(uint16_t cmd_code, uint8_t sequence_info,
     CAN_QueueTxFrame(&tx);
 }
 
+// Настраивает один аппаратный банк фильтра.
+// bank0: broadcast COMMAND; bank1: direct COMMAND на текущий NodeID.
+static void CAN_ConfigureFilterBank(uint8_t bank, uint8_t destination)
+{
+    CAN_FilterTypeDef filter_config;
+    uint32_t filter_id;
+    uint32_t filter_mask;
+    uint32_t filter_reg;
+
+    memset(&filter_config, 0, sizeof(filter_config));
+
+    filter_id = CAN_BUILD_ID(0U, CAN_MSG_TYPE_COMMAND, destination, 0U);
+    filter_reg = (filter_id << 3) | CAN_FILTER_IDE;
+    filter_mask = CAN_FILTER_MSGTYPE_DST_MASK | CAN_FILTER_IDE;
+
+    filter_config.FilterBank = bank;
+    filter_config.FilterMode = CAN_FILTERMODE_IDMASK;
+    filter_config.FilterScale = CAN_FILTERSCALE_32BIT;
+    filter_config.FilterIdHigh = (uint16_t)(filter_reg >> 16);
+    filter_config.FilterIdLow = (uint16_t)(filter_reg & 0xFFFFU);
+    filter_config.FilterMaskIdHigh = (uint16_t)(filter_mask >> 16);
+    filter_config.FilterMaskIdLow = (uint16_t)(filter_mask & 0xFFFFU);
+    filter_config.FilterFIFOAssignment = CAN_RX_FIFO0;
+    filter_config.FilterActivation = ENABLE;
+    filter_config.SlaveStartFilterBank = 14U;
+
+    if (HAL_CAN_ConfigFilter(&hcan, &filter_config) != HAL_OK) {
+        Error_Handler();
+    }
+}
+
+// F005: после смены RAM NodeID перенастраиваем bank1 до отправки DONE,
+// чтобы ACK ушёл на старый адрес, а DONE уже на новый.
+void CAN_UpdateDirectFilter(uint8_t destination)
+{
+    CAN_ConfigureFilterBank(1U, destination);
+}
+
 // ============================================================
 // Основная задача
 // ============================================================
@@ -214,30 +281,12 @@ void app_start_task_can_handler(void *argument)
     CanTxFrame_t tx_frame;
     uint32_t txMailbox;
 
-    // --- Настройка CAN-фильтра (Advanced: PerformerID + Broadcast) ---
-    CAN_FilterTypeDef sFilterConfig;
-    // ВНИМАНИЕ: Чтобы принимать и PerformerID, и Broadcast (0x00),
-    // аппаратная маска для поля DstAddr [23:16] должна быть 0x00,
-    // либо нужно использовать два банка фильтров.
-    // Для надежности используем программную фильтрацию DstAddr внутри задачи.
-
-    uint32_t filter_id   = 0x00000000 | CAN_ID_EXT; // Принимаем всё (фильтрация программно)
-    uint32_t filter_mask = 0x00000000 | CAN_ID_EXT;
-
-    sFilterConfig.FilterBank = 0;
-    sFilterConfig.FilterMode = CAN_FILTERMODE_IDMASK;
-    sFilterConfig.FilterScale = CAN_FILTERSCALE_32BIT;
-    sFilterConfig.FilterIdHigh = (uint16_t)(filter_id >> 16);
-    sFilterConfig.FilterIdLow = (uint16_t)(filter_id & 0xFFFF);
-    sFilterConfig.FilterMaskIdHigh = (uint16_t)(filter_mask >> 16);
-    sFilterConfig.FilterMaskIdLow = (uint16_t)(filter_mask & 0xFFFF);
-    sFilterConfig.FilterFIFOAssignment = CAN_RX_FIFO0;
-    sFilterConfig.FilterActivation = ENABLE;
-    sFilterConfig.SlaveStartFilterBank = 14;
-
-    if (HAL_CAN_ConfigFilter(&hcan, &sFilterConfig) != HAL_OK) {
-        Error_Handler();
-    }
+    // --- Настройка CAN-фильтров: два банка (broadcast + direct NodeID) ---
+    // bank0 принимает broadcast COMMAND (dst=0x00),
+    // bank1 — COMMAND на текущий NodeID. Программная валидация ниже
+    // остаётся вторым уровнем защиты.
+    CAN_ConfigureFilterBank(0U, CAN_ADDR_BROADCAST);
+    CAN_ConfigureFilterBank(1U, AppConfig_GetPerformerID());
 
     // --- Запуск CAN ---
     if (HAL_CAN_Start(&hcan) != HAL_OK) {
@@ -283,22 +332,31 @@ void app_start_task_can_handler(void *argument)
                 uint32_t can_id = rx_frame.header.ExtId;
                 uint8_t msg_type = CAN_GET_MSG_TYPE(can_id);
                 uint8_t dst_addr = CAN_GET_DST_ADDR(can_id);
+                uint8_t src_addr = CAN_GET_SRC_ADDR(can_id);
 
-                // --- Программная фильтрация адреса (PerformerID или Broadcast) ---
-                if (dst_addr != AppConfig_GetPerformerID() && dst_addr != CAN_ADDR_BROADCAST) {
-                    g_can_diag.dropped_wrong_dst++;
+                // Канонический порядок валидации: IDE -> RTR -> DLC -> type -> src -> dst.
+                // RTR и source отбрасываются без счётчика (контракт §2.2).
+                if (rx_frame.header.RTR != CAN_RTR_DATA) {
                     continue;
                 }
 
-                // Обрабатываем только команды
+                if (rx_frame.header.DLC != 8) {
+                    g_can_diag.dropped_wrong_dlc++;
+                    continue;
+                }
+
                 if (msg_type != CAN_MSG_TYPE_COMMAND) {
                     g_can_diag.dropped_wrong_type++;
                     continue;
                 }
 
-                // Директива 2.0: Строгий DLC=8 для всех команд типа COMMAND
-                if (rx_frame.header.DLC != 8) {
-                    g_can_diag.dropped_wrong_dlc++;
+                if (src_addr != CAN_ADDR_CONDUCTOR) {
+                    continue;
+                }
+
+                // Программная фильтрация адреса (PerformerID или Broadcast)
+                if (dst_addr != AppConfig_GetPerformerID() && dst_addr != CAN_ADDR_BROADCAST) {
+                    g_can_diag.dropped_wrong_dst++;
                     continue;
                 }
 

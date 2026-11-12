@@ -59,19 +59,29 @@ static uint16_t CalculateCRC16(AppConfig_t* cfg)
     return crc;
 }
 
+static bool IsValidPerformerId(uint8_t id)
+{
+    return (id >= 0x20U && id <= 0x2FU);
+}
+
 void AppConfig_Init(void)
 {
     // 1. Создание мьютекса для защиты доступа
     if (configMutex == NULL) {
         configMutex = osMutexNew(&configMutex_attr);
     }
+    if (configMutex == NULL) {
+        // Без мьютекса консистентность конфигурации не гарантируется.
+        Error_Handler();
+    }
 
     // 2. Чтение данных из Flash
     AppConfig_t* flash_cfg = (AppConfig_t*)APP_CONFIG_FLASH_ADDR;
 
-    // 3. Валидация (Magic + CRC16)
+    // 3. Валидация (Magic + CRC16 + NodeID семейства Motion 0x20..0x2F)
     if (flash_cfg->magic == APP_CONFIG_MAGIC &&
-        flash_cfg->checksum == CalculateCRC16(flash_cfg)) {
+        flash_cfg->checksum == CalculateCRC16(flash_cfg) &&
+        IsValidPerformerId(flash_cfg->performer_id)) {
         memcpy(&g_app_config, flash_cfg, sizeof(AppConfig_t));
     } else {
         // "Заводские настройки"
@@ -89,21 +99,31 @@ void AppConfig_Init(void)
     }
 }
 
-void AppConfig_FactoryReset(void)
+bool AppConfig_FactoryReset(void)
 {
+    bool success = false;
+
     if (osMutexAcquire(configMutex, osWaitForever) == osOK) {
-        HAL_FLASH_Unlock();
+        // Без успешной разблокировки стирание запрещено.
+        if (HAL_FLASH_Unlock() == HAL_OK) {
+            FLASH_EraseInitTypeDef EraseInitStruct;
+            uint32_t PageError = 0;
+            EraseInitStruct.TypeErase = FLASH_TYPEERASE_PAGES;
+            EraseInitStruct.PageAddress = APP_CONFIG_FLASH_ADDR;
+            EraseInitStruct.NbPages = 1;
 
-        FLASH_EraseInitTypeDef EraseInitStruct;
-        uint32_t PageError = 0;
-        EraseInitStruct.TypeErase = FLASH_TYPEERASE_PAGES;
-        EraseInitStruct.PageAddress = APP_CONFIG_FLASH_ADDR;
-        EraseInitStruct.NbPages = 1;
+            success = (HAL_FLASHEx_Erase(&EraseInitStruct, &PageError) == HAL_OK);
+        }
 
-        HAL_FLASHEx_Erase(&EraseInitStruct, &PageError);
-        HAL_FLASH_Lock();
+        // Ошибка Lock означает, что операция не может считаться успешной.
+        if (HAL_FLASH_Lock() != HAL_OK) {
+            success = false;
+        }
+
         osMutexRelease(configMutex);
     }
+
+    return success;
 }
 
 uint8_t AppConfig_GetMotorLogicalID(uint8_t physical_idx)
@@ -157,14 +177,16 @@ bool AppConfig_Commit(void)
         // 1. Обновляем контрольную сумму
         g_app_config.checksum = CalculateCRC16(&g_app_config);
 
-        // 2. Разблокировка, стирание, запись (атомарно)
-        HAL_FLASH_Unlock();
+        // 2. Без успешной разблокировки стирание/запись запрещены
+        status = HAL_FLASH_Unlock();
 
-        EraseInitStruct.TypeErase   = FLASH_TYPEERASE_PAGES;
-        EraseInitStruct.PageAddress = APP_CONFIG_FLASH_ADDR;
-        EraseInitStruct.NbPages     = 1;
+        if (status == HAL_OK) {
+            EraseInitStruct.TypeErase   = FLASH_TYPEERASE_PAGES;
+            EraseInitStruct.PageAddress = APP_CONFIG_FLASH_ADDR;
+            EraseInitStruct.NbPages     = 1;
 
-        status = HAL_FLASHEx_Erase(&EraseInitStruct, &PageError);
+            status = HAL_FLASHEx_Erase(&EraseInitStruct, &PageError);
+        }
 
         if (status == HAL_OK) {
             uint32_t* pData = (uint32_t*)&g_app_config;
@@ -181,7 +203,10 @@ bool AppConfig_Commit(void)
             }
         }
 
-        HAL_FLASH_Lock();
+        // Ошибка Lock также означает неуспех операции.
+        if (HAL_FLASH_Lock() != HAL_OK) {
+            status = HAL_ERROR;
+        }
 
         success = (status == HAL_OK);
         osMutexRelease(configMutex);

@@ -16,7 +16,7 @@ preamble=r'''
 #include <setjmp.h>
 #include <stdio.h>
 #include "motion_planner.h"
-#include "command_protocol.h"
+#include "task_motion_controller.h"
 #include "can_protocol.h"
 #define MOTOR_COUNT 8
 #define MOTION_MAX_SAFE_SPEED_STEPS_PER_SEC 20000U
@@ -33,6 +33,7 @@ static struct {uint16_t cmd,error;} responses[32];
 static bool running[8];
 void AppWatchdog_Heartbeat(int client) {(void)client;}
 bool TMCManager_IsReady(uint8_t id) {(void)id;++uart_checks;return false;}
+bool AppSafety_IsResetPending(void) { return false; }
 void MotionDriver_Init(void) {}
 void MotionDriver_SetDirection(uint8_t id,bool forward) {(void)id;(void)forward;}
 bool MotionDriver_StartMotor(uint8_t id,uint32_t speed) {
@@ -91,5 +92,5 @@ int main(void) {
 '''
 with tempfile.TemporaryDirectory(prefix='motion-controller-') as tmp:
     p=Path(tmp);(p/'test.c').write_text(preamble+command+queue+source+main)
-    subprocess.run(['gcc','-std=c11','-Wall','-Wextra','-Werror','-Wno-unused-parameter','-Wno-misleading-indentation','-I'+str(root/'App/inc'),str(p/'test.c'),str(root/'App/src/motion_planner.c'),'-o',str(p/'test')],check=True)
+    subprocess.run(['gcc','-std=c11','-Wall','-Wextra','-Werror','-Wno-unused-parameter','-Wno-misleading-indentation','-I'+str(root/'App/inc'),'-I'+str(root/'App/inc/tasks'),str(p/'test.c'),str(root/'App/src/motion_planner.c'),'-o',str(p/'test')],check=True)
     subprocess.run([str(p/'test')],check=True)

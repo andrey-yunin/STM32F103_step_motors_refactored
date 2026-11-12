@@ -4,7 +4,7 @@
 #include <string.h>
 #include "tmc2209_driver.h"
 #include "task_tmc2209_manager.h"
-#include "watchdog.h"
+#include "task_watchdog.h"
 
 UART_HandleTypeDef huart1, huart2;
 static UART_HandleTypeDef *silent_uart;

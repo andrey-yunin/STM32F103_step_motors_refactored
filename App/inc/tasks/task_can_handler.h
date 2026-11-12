@@ -9,6 +9,7 @@
 #define TASK_CAN_HANDLER_H_
 
 #include <stdint.h>
+#include <stdbool.h>
 
 typedef struct {
     uint32_t rx_total;
@@ -32,6 +33,12 @@ typedef struct {
 } CanDiagnostics_t;
 
 void app_start_task_can_handler(void *argument);
+
+void CAN_UpdateDirectFilter(uint8_t destination);
+
+/* Ожидание опустошения TX-очереди и почтовых ящиков bxCAN.
+ * Используется только перед сбросом (F002/F006); возвращает false по таймауту. */
+bool CAN_WaitTxIdle(uint32_t timeout_ms);
 
 void CAN_Diagnostics_GetSnapshot(CanDiagnostics_t *out);
 void CAN_Diagnostics_RecordRxQueueOverflow(void);

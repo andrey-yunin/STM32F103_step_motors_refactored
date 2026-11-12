@@ -286,23 +286,26 @@ bool MotionDriver_ConsumeCompletedMotor(uint8_t *motor_id)
         return false;
     }
 
+    // Сохраняем исходное состояние IRQ: вызывающий код может уже запрещать
+    // прерывания, и мы не должны их принудительно включать.
+    uint32_t primask = __get_PRIMASK();
     __disable_irq();
     uint32_t mask = s_completed_motor_mask;
     if (mask == 0U) {
-        __enable_irq();
+        __set_PRIMASK(primask);
         return false;
     }
 
     for (uint8_t i = 0; i < MOTOR_COUNT; i++) {
         if ((mask & (1UL << i)) != 0U) {
             s_completed_motor_mask &= ~(1UL << i);
-            __enable_irq();
+            __set_PRIMASK(primask);
             *motor_id = i;
             return true;
         }
     }
 
-    __enable_irq();
+    __set_PRIMASK(primask);
     return false;
 }
 

@@ -5,11 +5,11 @@
  *      Author: andrey
  */
 
-#include "watchdog.h"
+#include "task_watchdog.h"
 
 #include "cmsis_os.h"
 #include "main.h"
-#include "motion_driver.h"
+#include "app_safety.h"
 
 extern IWDG_HandleTypeDef hiwdg;
 
@@ -55,10 +55,8 @@ void app_start_task_watchdog(void *argument)
             continue;
         }
 
-        MotionDriver_AllSafe();
-
-        for (;;) {
-            osDelay(APP_WATCHDOG_SUPERVISOR_PERIOD_MS);
-        }
+        // Терминальный путь: IRQ off -> safe state -> DSB/ISB -> ожидание reset.
+        // RTOS больше не обслуживается, IWDG не перезагружается.
+        Error_Handler();
     }
 }

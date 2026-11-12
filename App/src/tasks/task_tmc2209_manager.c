@@ -2,7 +2,7 @@
 #include "main.h"
 #include "cmsis_os.h"
 #include "tmc2209_driver.h"
-#include "watchdog.h"
+#include "task_watchdog.h"
 #include "can_protocol.h"
 #include "FreeRTOS.h"
 #include "task.h"
@@ -51,7 +51,6 @@ static HAL_StatusTypeDef ConfigureBenchMotor(unsigned bus)
     HAL_StatusTypeDef status;
 #define CHECK_STAGE(number, operation) do { \
     diag->stage = (number); \
-    AppWatchdog_Heartbeat(APP_WDG_CLIENT_TMC); \
     status = (operation); \
     diag->hal_status = status; \
     if (status != HAL_OK) return status; \
@@ -119,8 +118,9 @@ void app_start_task_tmc2209_manager(void *argument)
         taskEXIT_CRITICAL();
     }
     // Ошибка не маскируется повторными записями. STOP доступен; новый опыт после reset.
+    // TMC пока не критичный клиент watchdog: heartbeat = progress, а не
+    // «задача жива». Вернётся в MU-07 вместе с event-driven job executor.
     for (;;) {
-        AppWatchdog_Heartbeat(APP_WDG_CLIENT_TMC);
         osDelay(APP_WATCHDOG_TASK_IDLE_TIMEOUT_MS);
     }
 }

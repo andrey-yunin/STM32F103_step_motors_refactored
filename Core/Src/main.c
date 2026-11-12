@@ -27,10 +27,9 @@
 #include "task_can_handler.h"
 #include "task_motion_controller.h"
 #include "task_tmc2209_manager.h"
-#include "watchdog.h"
+#include "task_watchdog.h"
 #include "app_config.h"
-#include "command_protocol.h"
-#include "motion_driver.h"
+#include "app_safety.h"
 #include "tmc2209_driver.h" // Для типа TMC2209_Handle_t
 
 
@@ -98,7 +97,7 @@ osThreadId_t task_watchdogHandle;
 const osThreadAttr_t task_watchdog_attributes = {
   .name = "task_watchdog",
   .stack_size = 128 * 4,
-  .priority = (osPriority_t) osPriorityNormal,
+  .priority = (osPriority_t) osPriorityRealtime7,
 };
 /* USER CODE BEGIN PV */
 
@@ -106,7 +105,6 @@ osMessageQueueId_t can_rx_queueHandle;
 osMessageQueueId_t can_tx_queueHandle;
 osMessageQueueId_t dispatcher_queueHandle;
 osMessageQueueId_t motion_queueHandle;
-osMessageQueueId_t tmc_manager_queueHandle;
 
 /* USER CODE END PV */
 
@@ -172,7 +170,7 @@ int main(void)
   MX_USART2_UART_Init();
   MX_IWDG_Init();
   /* USER CODE BEGIN 2 */
-  MotionDriver_AllSafe();
+  AppSafety_AllSafe();
 
   AppConfig_Init();
 
@@ -181,11 +179,10 @@ int main(void)
   can_tx_queueHandle = osMessageQueueNew(CAN_TX_QUEUE_LEN, sizeof(CanTxFrame_t), NULL); // CAN-фрейм на отправку
   dispatcher_queueHandle = osMessageQueueNew(DISPATCHER_QUEUE_LEN, sizeof(ParsedCanCommand_t), NULL); // Структура команды
   motion_queueHandle = osMessageQueueNew(MOTION_QUEUE_LEN, sizeof(MotionCommand_t), NULL); // Задание на движение
-  tmc_manager_queueHandle = osMessageQueueNew(TMC_MANAGER_QUEUE_LEN, sizeof(CAN_Command_t), NULL); // Команда TMC
 
   // Проверка успешности создания очередей
   if (can_rx_queueHandle == NULL || dispatcher_queueHandle == NULL ||
-      motion_queueHandle == NULL || tmc_manager_queueHandle == NULL ||
+      motion_queueHandle == NULL ||
       can_tx_queueHandle == NULL) {
     Error_Handler();
   }
@@ -661,7 +658,7 @@ static void MX_GPIO_Init(void)
 {
   GPIO_InitTypeDef GPIO_InitStruct = {0};
   /* USER CODE BEGIN MX_GPIO_Init_1 */
-  MotionDriver_AllSafe();
+  AppSafety_AllSafe();
 
   /* USER CODE END MX_GPIO_Init_1 */
 
@@ -845,8 +842,12 @@ void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
   /* User can add his own implementation to report the HAL error return state */
-  MotionDriver_AllSafe();
+  /* Терминальный путь: сначала запрещаем прерывания, затем безопасное
+   * состояние и барьеры памяти; RTOS и IWDG больше не обслуживаются. */
   __disable_irq();
+  AppSafety_AllSafe();
+  __DSB();
+  __ISB();
   while (1)
   {
   }

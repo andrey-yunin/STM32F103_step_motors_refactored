@@ -27,7 +27,7 @@
 #include "motion_planner.h"
 #include "app_config.h"
 #include "app_queues.h"
-#include "motion_driver.h"
+#include "app_safety.h"
 #include "task_can_handler.h"
 
 /* USER CODE END Includes */
@@ -69,8 +69,8 @@ static void EnterSafeFaultState(void)
    * Stop interrupts first, then force all motion outputs to the domain safe state.
    */
   __disable_irq();
-  MotionDriver_AllSafe();
-  __DSB();
+    AppSafety_AllSafe();
+    __DSB();
   __ISB();
 }
 
@@ -260,6 +260,13 @@ void USART2_IRQHandler(void)
 void USART1_IRQHandler(void)
 {
   HAL_UART_IRQHandler(&huart1);
+}
+
+// CAN1 status-change interrupt: HAL обрабатывает error/bus-off события
+// и вызывает HAL_CAN_ErrorCallback для диагностики F007.
+void CAN1_SCE_IRQHandler(void)
+{
+  HAL_CAN_IRQHandler(&hcan);
 }
 
 // Callback вызывается HAL, когда в CAN FIFO0 появился новый принятый фрейм.

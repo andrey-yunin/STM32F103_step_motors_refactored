@@ -64,7 +64,7 @@ with tempfile.TemporaryDirectory(prefix='motion-diag-c-') as tmp:
     path = Path(tmp)
     (path/'test.c').write_text(preamble+helpers+main)
     subprocess.run(['gcc','-std=c11','-Wall','-Wextra','-Werror','-I'+str(root/'tests/stubs'),'-I'+str(root/'App/inc'),
-                    '-I'+str(root/'App/inc/tasks'),str(path/'test.c'),'-o',str(path/'test')],check=True)
+                    '-I'+str(root/'App/inc/tasks'),'-I'+str(root/'App/inc/drivers'),str(path/'test.c'),'-o',str(path/'test')],check=True)
     output = subprocess.check_output([str(path/'test')],text=True)
     # Synthetic frames from production C; not bench evidence.
     print(output,end='')

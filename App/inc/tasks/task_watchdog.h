@@ -1,5 +1,5 @@
 /*
- * watchdog.h
+ * task_watchdog.h
  *
  *  Created on: Apr 23, 2026
  *      Author: andrey
@@ -17,7 +17,8 @@ typedef enum {
     APP_WDG_CLIENT_CAN = 0,
     APP_WDG_CLIENT_DISPATCHER,
     APP_WDG_CLIENT_MOTION,
-    APP_WDG_CLIENT_TMC,
+    // TMC не входит в критичные клиенты до MU-07: heartbeat обязан означать
+    // прогресс, а не просто существование задачи. Вернётся с job executor.
     APP_WDG_CLIENT_COUNT
 } AppWatchdogClient_t;
 

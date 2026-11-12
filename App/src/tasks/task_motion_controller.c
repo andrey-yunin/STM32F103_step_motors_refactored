@@ -21,9 +21,9 @@
 #include "app_config.h"
 #include "app_queues.h"
 #include "motion_driver.h"
-#include "command_protocol.h"
+#include "app_safety.h"
 #include "can_protocol.h"
-#include "watchdog.h"
+#include "task_watchdog.h"
 #include <string.h>
 
 
@@ -160,6 +160,12 @@ static void MotionController_ProcessCompletedMove(uint8_t motor_id)
     motor_states[motor_id].current_speed_steps_per_sec = 0;
     g_motor_active[motor_id] = false;
 
+    if (AppSafety_IsResetPending()) {
+        // Движение отменено подготовкой к сбросу: DONE не отправляется.
+        MotionController_ResetGroup(group);
+        return;
+    }
+
     CAN_SendDone(group->active_cmd_code, group->active_device_id);
 
     // Освобождаем общий TIM resource.
@@ -176,9 +182,24 @@ static void MotionController_ProcessDriverCompletions(void)
     }
 }
 
+static void MotionController_AbortAllMotions(void)
+{
+    // Reset подготовлен: физические выходы уже остановлены AppSafety.
+    // Здесь только сбрасываем модель осей и владение TIM-группами,
+    // чтобы поздние completion не превратились в DONE.
+    for (uint8_t i = 0; i < MOTOR_COUNT; i++) {
+        MotionDriver_StopMotor(i);
+        g_motor_active[i] = false;
+        motor_states[i].steps_to_go = 0;
+        motor_states[i].current_speed_steps_per_sec = 0;
+    }
+    MotionController_InitGroups();
+}
+
 void app_start_task_motion_controller(void *argument)
 {
     MotionCommand_t received_motion_cmd;
+    bool reset_abort_done = false;
 
     // --- Инициализация состояний моторов и драйвера ---
     for (uint8_t i = 0; i < MOTOR_COUNT; i++) {
@@ -192,6 +213,14 @@ void app_start_task_motion_controller(void *argument)
     // --- Основной цикл ---
     for (;;) {
         AppWatchdog_Heartbeat(APP_WDG_CLIENT_MOTION);
+
+        if (AppSafety_IsResetPending() && !reset_abort_done) {
+            // Латч односторонний: отменяем движение один раз, чтобы не
+            // переписывать выходы каждые 10 мс при задержанном сбросе.
+            MotionController_AbortAllMotions();
+            reset_abort_done = true;
+        }
+
         MotionController_ProcessDriverCompletions();
 
         if (osMessageQueueGet(motion_queueHandle, &received_motion_cmd, NULL,
@@ -226,6 +255,12 @@ void app_start_task_motion_controller(void *argument)
                 continue;
             }
 
+            if (AppSafety_IsResetPending() && received_motion_cmd.command_id != CMD_STOP) {
+                // После PrepareReset новые активации запрещены до перезапуска MCU.
+                CAN_SendNackPublic(cmd_code, CAN_ERR_DEVICE_BUSY);
+                continue;
+            }
+
             // --- Обработка команды ---
             switch (received_motion_cmd.command_id) {
             case CMD_MOVE_ABSOLUTE:
@@ -239,17 +274,21 @@ void app_start_task_motion_controller(void *argument)
                                                                 : -(int32_t)received_motion_cmd.steps);
                 }
 
-                int32_t steps_to_go = MotionPlanner_CalculateNewTarget(&motor_states[motor_id], target_pos);
-                if (steps_to_go == 0) {
+                int32_t delta = target_pos - motor_states[motor_id].current_position;
+                if (delta == 0) {
                     // Движение не требуется: контракт finite-команды выполнен без запуска STEP.
                     CAN_SendDone(cmd_code, device_id);
                     continue;
                 }
 
+                // Параметры проверяются до мутации модели оси: отклонённая
+                // команда не должна оставлять изменённые target/direction/steps_to_go.
                 if (!MotionController_IsSpeedValid(received_motion_cmd.speed_steps_per_sec)) {
                     CAN_SendNackPublic(cmd_code, CAN_ERR_INVALID_PARAM);
                     continue;
                 }
+
+                int32_t steps_to_go = MotionPlanner_CalculateNewTarget(&motor_states[motor_id], target_pos);
 
                 motor_states[motor_id].max_speed_steps_per_sec = received_motion_cmd.speed_steps_per_sec;
                 motor_states[motor_id].current_speed_steps_per_sec = received_motion_cmd.speed_steps_per_sec;
@@ -299,7 +338,10 @@ void app_start_task_motion_controller(void *argument)
             }
 
             case CMD_SET_SPEED: {
-                if (received_motion_cmd.speed_steps_per_sec > MOTION_MAX_SAFE_SPEED_STEPS_PER_SEC) {
+                if (received_motion_cmd.speed_steps_per_sec > MOTION_MAX_SAFE_SPEED_STEPS_PER_SEC ||
+                    (cmd_code == CAN_CMD_MOTOR_START_CONTINUOUS &&
+                     received_motion_cmd.speed_steps_per_sec == 0U)) {
+                    // START_CONTINUOUS с нулевой скоростью не является состоянием «вращение».
                     CAN_SendNackPublic(cmd_code, CAN_ERR_INVALID_PARAM);
                     break;
                 }
@@ -342,6 +384,8 @@ void app_start_task_motion_controller(void *argument)
             }
 
             default:
+                // Любая неизвестная команда должна иметь терминальный ответ.
+                CAN_SendNackPublic(cmd_code, CAN_ERR_UNKNOWN_CMD);
                 break;
             }
         }
